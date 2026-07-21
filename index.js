@@ -857,6 +857,52 @@ bot.on(["voice", "audio", "video"], async (ctx, next) => {
 });
 
 // DOCUMENT / EXCEL FILE HANDLER (DEEP MULTI-SHEET DATA ANALYSIS ENGINE)
+// MULTI-DOCUMENT BATCH QUEUE COLLECTOR ENGINE
+const documentBatchMap = new Map();
+
+async function processDocumentBatch(ctx, batch) {
+    try {
+        await ctx.reply(`🔍 *Sedang menganalisis ${batch.files.length} berkas Excel secara bersamaan via Google Gemini Pro...*`);
+        await ctx.sendChatAction("typing");
+
+        let combinedExtractedContext = "";
+
+        for (const file of batch.files) {
+            if (file.isExcel) {
+                combinedExtractedContext += parseExcelFileBuffer(file.buffer, file.filename) + "\n\n";
+            } else {
+                combinedExtractedContext += `\n--- BERKAS DOKUMEN: ${file.filename} ---\n` + file.buffer.toString("utf-8").substring(0, 10000) + "\n\n";
+            }
+        }
+
+        const userCaption = batch.caption || "Tolong analisa seluruh berkas terlampir secara teliti, cocokkan data antar file & sheet, dan sajikan hasilnya dalam bentuk tabel Markdown yang rapi.";
+        const currentDateWib = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "full", timeStyle: "medium" });
+
+        const promptPayload = `[WAKTU REAL-TIME SEKARANG (WIB)]: ${currentDateWib}\n\nBERKAS DOKUMEN/EXCEL TERLAMPIR (${batch.files.length} FILE BERSAMAAN):\n${combinedExtractedContext}\n\nPERINTAH PENGGUNA:\n${userCaption}`;
+
+        const messages = [
+            {
+                role: "system",
+                content: "Kamu adalah CitCat Multi-Document & Excel Data Specialist. Tugasmu adalah menganalisis dan membandingkan SELURUH berkas Excel/dokumen yang terlampir secara teliti, mencocokkan data antar file dan sheet (seperti membandingkan bahan di file Siklus Menu dengan file Master Produk), menemukan data yang belum ada/berbeda, dan menyajikan hasilnya dalam bentuk tabel Markdown yang rapi, teliti, dan lengkap."
+            },
+            {
+                role: "user",
+                content: promptPayload
+            }
+        ];
+
+        Logger.info(`Analyzing document batch (${batch.files.length} files) via Gemini Pro...`);
+        const rawAnswer = await AiService.askWithFallback(messages, 0.2);
+        const finalAnswer = TextSanitizer.sanitizeOutput(rawAnswer);
+
+        await TelegramPresenter.reply(ctx, finalAnswer || "Berhasil menganalisis seluruh berkas.");
+
+    } catch (err) {
+        Logger.error("Document Batch Processing Error:", err.message);
+        await TelegramPresenter.reply(ctx, `❌ Gagal memproses berkas dokumen: ${err.message}`);
+    }
+}
+
 bot.on("document", async (ctx, next) => {
     try {
         const message = ctx.message;
@@ -874,47 +920,41 @@ bot.on("document", async (ctx, next) => {
         }
 
         const isExcel = /\.(xlsx|xls|csv)$/i.test(lowerName) || mimeType.includes("spreadsheet") || mimeType.includes("excel") || mimeType.includes("csv");
+        if (!isExcel) return next();
 
-        await ctx.reply(`📊 *Menerima berkas:* \`${filename}\`\nSedang membaca & menganalisis seluruh isi sheet data via **Google Gemini Pro**...`);
-        await ctx.sendChatAction("typing");
-
+        const chatId = String(ctx.chat.id);
         const fileLink = await ctx.telegram.getFileLink(document.file_id);
         const response = await axios.get(fileLink.href, { responseType: "arraybuffer" });
         const fileBuffer = Buffer.from(response.data);
 
-        let extractedTextContext = "";
+        const caption = message.caption || "";
 
-        if (isExcel) {
-            extractedTextContext = parseExcelFileBuffer(fileBuffer, filename);
-        } else {
-            extractedTextContext = `\n--- BERKAS DOKUMEN: ${filename} ---\n` + fileBuffer.toString("utf-8").substring(0, 20000);
+        if (!documentBatchMap.has(chatId)) {
+            documentBatchMap.set(chatId, {
+                files: [],
+                timer: null,
+                caption: ""
+            });
         }
 
-        const userCaption = message.caption || "Tolong analisa berkas ini secara teliti, cocokkan data antar sheet, dan berikan hasilnya dalam bentuk tabel Markdown yang rapi.";
+        const batch = documentBatchMap.get(chatId);
+        batch.files.push({ filename, buffer: fileBuffer, isExcel });
+        if (caption) batch.caption = caption;
 
-        const promptPayload = `BERKAS DOKUMEN/EXCEL TERLAMPIR:\n${extractedTextContext}\n\nPERINTAH PENGGUNA:\n${userCaption}`;
+        if (batch.timer) clearTimeout(batch.timer);
 
-        const messages = [
-            {
-                role: "system",
-                content: "Kamu adalah CitCat Document & Excel Data Specialist. Tugasmu adalah menganalisis berkas Excel/dokumen terlampir secara teliti, mencocokkan data antar sheet/baris jika diminta, menemukan perbedaan/data yang belum ada, dan menyajikan hasilnya dalam bentuk tabel Markdown yang rapi, akurat, dan mudah dibaca."
-            },
-            {
-                role: "user",
-                content: promptPayload
+        await ctx.reply(`📊 *Menerima berkas (${batch.files.length}):* \`${filename}\`... (Menunggu berkas lainnya)...`);
+
+        batch.timer = setTimeout(async () => {
+            const currentBatch = documentBatchMap.get(chatId);
+            documentBatchMap.delete(chatId);
+            if (currentBatch && currentBatch.files.length > 0) {
+                await processDocumentBatch(ctx, currentBatch);
             }
-        ];
-
-        Logger.info(`Analyzing document ${filename} (${fileBuffer.length} bytes) via Gemini Pro...`);
-
-        const rawAnswer = await AiService.askWithFallback(messages, 0.2);
-        const finalAnswer = TextSanitizer.sanitizeOutput(rawAnswer);
-
-        await TelegramPresenter.reply(ctx, finalAnswer || "Berhasil memproses dokumen.");
+        }, 2000);
 
     } catch (err) {
-        Logger.error("Document Processing Error:", err.message);
-        await TelegramPresenter.reply(ctx, `❌ Gagal memproses berkas dokumen: ${err.message}`);
+        Logger.error("Document Queue Error:", err.message);
     }
 });
 

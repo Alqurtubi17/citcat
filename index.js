@@ -178,12 +178,26 @@ class AiService {
     }
 
     /**
-     * Fast Instant Search Need Classifier (0 ms overhead!)
+     * Fast Instant Search Need Classifier with History Operation Detection
      */
     static checkSearchNeed(text) {
         if (!text) return false;
         const lower = text.toLowerCase();
 
+        // 1. Bypass search if user is asking to summarize, process, or operate on existing conversation history
+        const historyOperationKeywords = [
+            "sebelumnya", "yang tadi", "di atas", "dari hasil", "dari jurnal",
+            "ringkas hasil", "buatkan ringkasan", "rangkumkan", "rangkum",
+            "terjemahkan ini", "jelaskan yang tadi", "nomor 1", "nomor 2", "point 1", "poin 1",
+            "tabelkan", "listkan"
+        ];
+
+        if (historyOperationKeywords.some(kw => lower.includes(kw))) {
+            Logger.info("Pesan meminta operasi dari riwayat percakapan -> Melewati pencarian web baru.");
+            return false;
+        }
+
+        // 2. Explicit Search Intent Keywords
         const searchKeywords = [
             "carikan", "cari", "jurnal", "paper", "sinta", "berita", "terbaru", "hari ini",
             "siapa", "dimana", "kapan", "mengapa", "kenapa", "berapa", "presiden", "juara",
@@ -286,6 +300,7 @@ Saya CitCat - High-Performance Multi-Agent System!
 Fitur Utama:
 • Ultra Fast Response (Kecepatan Tinggi)
 • Memori Pembelajaran Singkatan/Akronim
+• Context History Intelligence (Ringkas & Olah Jawaban Sebelumnya)
 • Research & Web Search Engine
 
 Perintah:
@@ -463,7 +478,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Ultra-Fast Multi-Agent System Active (0ms Router Overhead)`);
+Logger.info(`CitCat Ultra-Fast Multi-Agent System Active (History Operation Intelligence Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

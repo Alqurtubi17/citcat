@@ -7,11 +7,14 @@ const { Telegraf } = require("telegraf");
 
 const { MemoryManager } = require("./memory");
 const { searchWeb } = require("./search");
+const { createPdfBuffer } = require("./pdfService");
+const { transcribeAndSummarizeMedia } = require("./mediaService");
 
 const chatAgent = require("./agents/chat");
 const codingAgent = require("./agents/coding");
 const researchAgent = require("./agents/research");
 const devopsAgent = require("./agents/devops");
+const transcribeAgent = require("./agents/transcribe");
 
 const CONFIG = {
     TELEGRAM_TOKEN: process.env.TELEGRAM_TOKEN,
@@ -67,7 +70,7 @@ class TextSanitizer {
             .replace(/<br\s*\/?>/gi, "\n")
             .replace(/<[^>]*>?/gm, "")
             .replace(/[\u0300-\u036f]/g, "")             // Remove combining diacritical marks
-            .replace(/[\u10A0-\u10FF]/g, "")             // Remove Georgian alphabet (e.g. მიღ)
+            .replace(/[\u10A0-\u10FF]/g, "")             // Remove Georgian alphabet
             .replace(/[\u0400-\u04FF]/g, "")             // Remove Cyrillic alphabet
             .replace(/[\u4e00-\u9fa5]+/g, "")             // Remove Chinese/Japanese/Korean
             .replace(/\\\[([\s\S]*?)\\]/g, "$1")       // Remove display LaTeX brackets
@@ -159,12 +162,13 @@ class DocumentService {
 }
 
 class AiService {
-    /**
-     * Fast Instant Local Agent Selector (0 ms overhead!)
-     */
     static selectAgent(text) {
         if (!text) return chatAgent;
         const lower = text.toLowerCase();
+
+        if (/\b(transkrip|rekaman|suara|audio|video|voice|speech|youtube)\b/i.test(lower)) {
+            return transcribeAgent;
+        }
 
         if (/\b(code|coding|react|nextjs|javascript|typescript|express|api|node|html|css|function|bug|err|script)\b/i.test(lower)) {
             return codingAgent;
@@ -181,14 +185,10 @@ class AiService {
         return chatAgent;
     }
 
-    /**
-     * Fast Instant Search Need Classifier with History Operation Detection
-     */
     static checkSearchNeed(text) {
         if (!text) return false;
         const lower = text.toLowerCase();
 
-        // 1. Bypass search if user is asking to summarize, process, or operate on existing conversation history
         const historyOperationKeywords = [
             "sebelumnya", "yang tadi", "di atas", "dari hasil", "dari jurnal",
             "ringkas hasil", "buatkan ringkasan", "rangkumkan", "rangkum",
@@ -201,7 +201,6 @@ class AiService {
             return false;
         }
 
-        // 2. Explicit Search Intent Keywords
         const searchKeywords = [
             "carikan", "cari", "jurnal", "paper", "sinta", "berita", "terbaru", "hari ini",
             "siapa", "dimana", "kapan", "mengapa", "kenapa", "berapa", "presiden", "juara",
@@ -212,9 +211,6 @@ class AiService {
         return searchKeywords.some(kw => lower.includes(kw));
     }
 
-    /**
-     * Build context-aware web search query for follow-up questions
-     */
     static buildSearchQuery(userText, history = []) {
         if (!history || history.length === 0) return userText;
 
@@ -301,18 +297,15 @@ bot.start(async (ctx) => {
 
 Saya CitCat - High-Performance Multi-Agent System!
 
-Fitur Utama:
-• Ultra Fast Response (Kecepatan Tinggi)
-• Memori Pembelajaran Singkatan/Akronim
-• Context History Intelligence (Ringkas & Olah Jawaban Sebelumnya)
-• Research & Web Search Engine
+Agent Spesialis:
+🎙️ /transcribe - Transkrip Voice Note, Audio, Video & PDF (Google Gemini Pro)
+💻 /coding - Mode Coding Specialist (Node.js, React)
+📚 /research - Mode Research Specialist (Jurnal & Paper)
+🛠️ /devops - Mode DevOps Specialist (Docker, Linux, PM2)
+🤖 /chat - Mode General Chat
 
-Perintah:
-/singkatan - Lihat daftar singkatan yang diingat bot
-/coding - Mode Coding Specialist
-/research - Mode Research Specialist
-/devops - Mode DevOps Specialist
-/chat - Mode General Chat
+Fitur Lainnya:
+/singkatan - lihat memori singkatan kustom
 /reset - Hapus riwayat chat`
     );
 });
@@ -339,6 +332,14 @@ bot.command("singkatan", async (ctx) => {
     await TelegramPresenter.reply(ctx, `📖 *Singkatan Kustom Yang Diingat Bot:*\n\n${listText}`);
 });
 
+bot.command("transcribe", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    MemoryManager.setMode(chatId, "TRANSCRIBE");
+    await TelegramPresenter.reply(ctx,
+        "🎙️ Mode diaktifkan: *CitCat Transcribe Agent (Google Gemini Pro)*\n\nKirimkan file Voice Note, Audio (MP3/WAV/OGG), atau Video (MP4) langsung ke chat ini. Bot akan otomatis membuatkan **Transkrip Lengkap PDF** & **Rangkuman Inti PDF**!"
+    );
+});
+
 bot.command("coding", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.setMode(chatId, "CODING");
@@ -361,6 +362,57 @@ bot.command("chat", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.setMode(chatId, "GENERAL");
     await TelegramPresenter.reply(ctx, "🤖 Mode diaktifkan: *General Chat Agent*");
+});
+
+// MEDIA HANDLER (Voice Notes, Audio, Video Files)
+bot.on(["voice", "audio", "video", "document"], async (ctx) => {
+    try {
+        const message = ctx.message;
+        const fileObj = message.voice || message.audio || message.video || message.document;
+
+        if (!fileObj) return;
+
+        const mimeType = message.voice ? "audio/ogg" : (fileObj.mime_type || "audio/mp3");
+
+        // Allow audio, video, or voice mime types
+        if (!mimeType.includes("audio") && !mimeType.includes("video") && !mimeType.includes("ogg")) {
+            return; // Skip non-media document files
+        }
+
+        await ctx.reply("🎙️ *Menerima file media...* Sedang memproses transkripsi & rangkuman via **Google Gemini Pro** (Mohon tunggu sebentar)...");
+        await ctx.sendChatAction("upload_document");
+
+        const fileLink = await ctx.telegram.getFileLink(fileObj.file_id);
+
+        const response = await axios.get(fileLink.href, { responseType: "arraybuffer" });
+        const mediaBuffer = Buffer.from(response.data);
+
+        Logger.info(`Processing media transcription (${mediaBuffer.length} bytes, mime: ${mimeType})...`);
+
+        const { fullTranscript, coreSummary } = await transcribeAndSummarizeMedia(mediaBuffer, mimeType);
+
+        await ctx.reply("📄 *Transkripsi & Rangkuman Selesai!* Menggenerasi dokumen PDF...");
+
+        const transcriptPdfBuffer = await createPdfBuffer("TRANSKRIP LENGKAP MEDIA (Google Gemini Pro)", fullTranscript);
+        const summaryPdfBuffer = await createPdfBuffer("RANGKUMAN INTI PENELITIAN & MEDIA", coreSummary);
+
+        const shortSummaryPreview = TextSanitizer.sanitizeOutput(coreSummary).substring(0, 800);
+        await TelegramPresenter.reply(ctx, `📌 *RANGKUMAN INTI:* \n\n${shortSummaryPreview}\n\n*(Dokumen PDF lengkap dilampirkan di bawah)*`);
+
+        await ctx.replyWithDocument({
+            source: summaryPdfBuffer,
+            filename: "Rangkuman_Inti.pdf"
+        });
+
+        await ctx.replyWithDocument({
+            source: transcriptPdfBuffer,
+            filename: "Transkrip_Lengkap.pdf"
+        });
+
+    } catch (err) {
+        Logger.error("Media Processing Error:", err.message);
+        await TelegramPresenter.reply(ctx, `❌ Gagal memproses media: ${err.message}`);
+    }
 });
 
 bot.on("text", async (ctx) => {
@@ -401,6 +453,7 @@ bot.on("text", async (ctx) => {
         if (userMode === "CODING") activeAgent = codingAgent;
         else if (userMode === "RESEARCH") activeAgent = researchAgent;
         else if (userMode === "DEVOPS") activeAgent = devopsAgent;
+        else if (userMode === "TRANSCRIBE") activeAgent = transcribeAgent;
         else {
             activeAgent = AiService.selectAgent(userText); // Instant local selection (0 ms)
         }
@@ -482,7 +535,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Ultra-Fast Multi-Agent System Active (Deterministic Temperature 0.2 & Multi-Language Sanitizer Active)`);
+Logger.info(`CitCat Multi-Agent System Active (Transcribe Agent & Google Gemini Pro Media Integration Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

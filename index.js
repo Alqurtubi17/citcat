@@ -9,13 +9,16 @@ const { MemoryManager } = require("./memory");
 const { ConfigManager } = require("./configManager");
 const { searchWeb } = require("./search");
 const { createPdfBuffer } = require("./pdfService");
+const { createExcelBuffer } = require("./excelService");
 const { transcribeAndSummarizeMedia } = require("./mediaService");
+const { processImageOcr } = require("./ocrService");
 
 const chatAgent = require("./agents/chat");
 const codingAgent = require("./agents/coding");
 const researchAgent = require("./agents/research");
 const devopsAgent = require("./agents/devops");
 const transcribeAgent = require("./agents/transcribe");
+const ocrAgent = require("./agents/ocr");
 
 const CONFIG = {
     TELEGRAM_TOKEN: process.env.TELEGRAM_TOKEN,
@@ -161,6 +164,10 @@ class AiService {
         if (!text) return chatAgent;
         const lower = text.toLowerCase();
 
+        if (/\b(ocr|foto|gambar|scan|kuitansi|nota|invoice|excel|xlsx)\b/i.test(lower)) {
+            return ocrAgent;
+        }
+
         if (/\b(transkrip|rekaman|suara|audio|video|voice|speech|youtube)\b/i.test(lower)) {
             return transcribeAgent;
         }
@@ -296,15 +303,18 @@ class TelegramPresenter {
 function getMainMenuMarkup() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("🎙️ Transkrip & PDF", "MODE_TRANSCRIBE"),
-            Markup.button.callback("📚 Riset & Jurnal", "MODE_RESEARCH")
+            Markup.button.callback("🖼️ OCR Vision & Excel", "MODE_OCR"),
+            Markup.button.callback("🎙️ Transkrip & PDF", "MODE_TRANSCRIBE")
         ],
         [
-            Markup.button.callback("💻 Koding Specialist", "MODE_CODING"),
-            Markup.button.callback("🛠️ DevOps & Linux", "MODE_DEVOPS")
+            Markup.button.callback("📚 Riset & Jurnal", "MODE_RESEARCH"),
+            Markup.button.callback("💻 Koding Specialist", "MODE_CODING")
         ],
         [
-            Markup.button.callback("🤖 Atur Model AI", "SHOW_MODEL_SETTINGS"),
+            Markup.button.callback("🛠️ DevOps & Linux", "MODE_DEVOPS"),
+            Markup.button.callback("🤖 Atur Model AI", "SHOW_MODEL_SETTINGS")
+        ],
+        [
             Markup.button.callback("🧹 Reset Memori", "RESET_MEMORY")
         ]
     ]);
@@ -341,11 +351,12 @@ const bot = new Telegraf(CONFIG.TELEGRAM_TOKEN);
 
 bot.telegram.setMyCommands([
     { command: "start", description: "Tampilkan menu utama & greeting" },
+    { command: "ocr", description: "OCR Foto/Dokumen ke Excel & PDF (Gemini Vision)" },
+    { command: "transcribe", description: "Transkrip Voice/Audio/Video ke PDF (Gemini Pro)" },
     { command: "model", description: "Cek & ganti model AI aktif" },
     { command: "gantimodel", description: "Set model utama (/gantimodel <nama>)" },
     { command: "tambahmodel", description: "Tambah model fallback (/tambahmodel <nama>)" },
     { command: "setkey", description: "Set API Key (/setkey <KEY> <VALUE>)" },
-    { command: "transcribe", description: "Transkrip Voice/Audio/Video ke PDF (Gemini Pro)" },
     { command: "research", description: "Riset Jurnal & Paper Akademik" },
     { command: "coding", description: "Bantuan Fullstack Koding & Scripting" },
     { command: "devops", description: "Bantuan Server, Docker & Linux" },
@@ -367,7 +378,6 @@ bot.command(["model", "models"], async (ctx) => {
     const chain = ConfigManager.getModelChain();
 
     const chainText = chain.map((m, i) => `  ${i + 1}. \`${m}\``).join("\n");
-
     const text = `🤖 *Status Model AI CitCat:*\n\n*Model Utama Aktif:* \`${primary}\`\n\n*Model Fallback Chain:*\n${chainText}\n\n*Pilih Model Cepat di Bawah, atau Ketik Command:*\n• \`/gantimodel <nama_model>\`\n• \`/tambahmodel <nama_model>\`\n\n*Kelola API Key:*\n• \`/setkey GEMINI_API_KEY <api_key>\`\n• \`/setkey OPENROUTER_API_KEY <api_key>\``;
 
     await TelegramPresenter.reply(ctx, text, getModelPresetKeyboard());
@@ -415,7 +425,20 @@ bot.command("setkey", async (ctx) => {
     await TelegramPresenter.reply(ctx, `🔑 *API Key Berhasil Disimpan!*\n\nKey: \`${keyName}\` (Tersimpan aman di memori server)`);
 });
 
-// CALLBACK BUTTON HANDLERS FOR MODEL SETTINGS
+bot.command("ocr", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    MemoryManager.setMode(chatId, "OCR");
+    await TelegramPresenter.reply(ctx, "🖼️ Mode diaktifkan: *OCR Vision & Data Specialist (Google Gemini Vision)*\n\nKirimkan foto/scan dokumen, kuitansi, nota, atau tabel. Bot akan mengekstrak teksnya dan mengonversi ke **File Excel (.xlsx)** & **PDF**!");
+});
+
+// CALLBACK BUTTON HANDLERS
+bot.action("MODE_OCR", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    MemoryManager.setMode(chatId, "OCR");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "🖼️ Mode diaktifkan: *OCR Vision & Data Specialist (Google Gemini Vision)*\n\nKirimkan foto/scan dokumen, kuitansi, nota, atau tabel. Bot akan mengekstrak teksnya dan mengonversi ke **File Excel (.xlsx)** & **PDF**!");
+});
+
 bot.action("SHOW_MODEL_SETTINGS", async (ctx) => {
     await ctx.answerCbQuery();
     const primary = ConfigManager.getPrimaryModel();
@@ -463,7 +486,6 @@ bot.action("SET_MODEL_gpt4o", async (ctx) => {
     await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `openai/gpt-4o`");
 });
 
-// CALLBACK BUTTON HANDLERS FOR AGENT MODES
 bot.action("MODE_TRANSCRIBE", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.setMode(chatId, "TRANSCRIBE");
@@ -551,6 +573,65 @@ bot.command("chat", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.setMode(chatId, "GENERAL");
     await TelegramPresenter.reply(ctx, "🤖 Mode diaktifkan: *General Chat Agent*");
+});
+
+// PHOTO & IMAGE OCR HANDLER
+bot.on(["photo", "document"], async (ctx, next) => {
+    try {
+        const message = ctx.message;
+        const photos = message.photo;
+        const document = message.document;
+
+        let fileId = null;
+        let mimeType = "image/jpeg";
+
+        if (photos && photos.length > 0) {
+            fileId = photos[photos.length - 1].file_id; // Get highest resolution photo
+        } else if (document && document.mime_type && document.mime_type.startsWith("image/")) {
+            fileId = document.file_id;
+            mimeType = document.mime_type;
+        }
+
+        if (!fileId) return next();
+
+        const userCaption = message.caption || "";
+
+        await ctx.reply("🖼️ *Menerima foto/dokumen...* Sedang mengekstrak teks & tabel via **Google Gemini Vision AI**...");
+        await ctx.sendChatAction("upload_document");
+
+        const fileLink = await ctx.telegram.getFileLink(fileId);
+
+        const response = await axios.get(fileLink.href, { responseType: "arraybuffer" });
+        const imageBuffer = Buffer.from(response.data);
+
+        Logger.info(`Processing Vision OCR (${imageBuffer.length} bytes)...`);
+
+        const { ocrText, tableData } = await processImageOcr(imageBuffer, mimeType, userCaption);
+
+        await ctx.reply("📊 *OCR Selesai!* Menggenerasi berkas dokumen...");
+
+        const pdfBuffer = await createPdfBuffer("HASIL OCR DOKUMEN (Google Gemini Vision)", ocrText);
+
+        const dataToExport = tableData || ocrText;
+        const excelBuffer = createExcelBuffer(dataToExport, "Hasil_OCR");
+
+        const textPreview = TextSanitizer.sanitizeOutput(ocrText).substring(0, 1000);
+        await TelegramPresenter.reply(ctx, `📌 *HASIL TEKS OCR:* \n\n${textPreview}\n\n*(Berkas Excel & PDF terlampir di bawah)*`);
+
+        await ctx.replyWithDocument({
+            source: excelBuffer,
+            filename: "Hasil_OCR_Data.xlsx"
+        });
+
+        await ctx.replyWithDocument({
+            source: pdfBuffer,
+            filename: "Hasil_OCR_Dokumen.pdf"
+        });
+
+    } catch (err) {
+        Logger.error("OCR Processing Error:", err.message);
+        await TelegramPresenter.reply(ctx, `❌ Gagal memproses OCR gambar: ${err.message}`);
+    }
 });
 
 // MEDIA HANDLER (Voice Notes, Audio, Video Files)
@@ -651,6 +732,7 @@ bot.on("text", async (ctx) => {
         else if (userMode === "RESEARCH") activeAgent = researchAgent;
         else if (userMode === "DEVOPS") activeAgent = devopsAgent;
         else if (userMode === "TRANSCRIBE") activeAgent = transcribeAgent;
+        else if (userMode === "OCR") activeAgent = ocrAgent;
         else {
             activeAgent = AiService.selectAgent(userText); // Instant local selection (0 ms)
         }
@@ -732,7 +814,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Dynamic Model & API Key Config Engine Active`);
+Logger.info(`CitCat Production System Active (Google Gemini Vision OCR & Excel Export Engine Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

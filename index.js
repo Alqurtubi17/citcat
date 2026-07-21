@@ -26,12 +26,13 @@ const CONFIG = {
     LIMITS: {
         MAX_INPUT_LENGTH: 2000,
         MAX_OUTPUT_LENGTH: 4000,
-        MAX_SEARCH_RESULTS: 15
+        MAX_SEARCH_RESULTS: 15,
+        MAX_TOKENS_GEN: 1500
     },
     TIMEOUTS: {
-        ROUTER_MS: 10000,
-        OPENROUTER_MS: 120000,
-        FETCH_MS: 15000
+        ROUTER_MS: 5000,
+        OPENROUTER_MS: 30000,
+        FETCH_MS: 8000
     }
 };
 
@@ -154,17 +155,48 @@ class DocumentService {
 }
 
 class AiService {
-    static buildRouterContext(history, currentText) {
-        const last6 = (history || [])
-            .slice(-6)
-            .map(m => `${m.role.toUpperCase()}: ${m.content}`)
-            .join("\n");
+    /**
+     * Fast Instant Local Agent Selector (0 ms overhead!)
+     */
+    static selectAgent(text) {
+        if (!text) return chatAgent;
+        const lower = text.toLowerCase();
 
-        return last6
-            ? `PERCAKAPAN SEBELUMNYA:\n${last6}\n\nPESAN TERBARU:\nUSER: ${currentText}`
-            : currentText;
+        if (/\b(code|coding|react|nextjs|javascript|typescript|express|api|node|html|css|function|bug|err|script)\b/i.test(lower)) {
+            return codingAgent;
+        }
+
+        if (/\b(docker|ubuntu|linux|nginx|pm2|tailscale|server|ssh|devops|bash|cron|sudo)\b/i.test(lower)) {
+            return devopsAgent;
+        }
+
+        if (/\b(jurnal|paper|penelitian|research|arxiv|ieee|sinta|pdf|doi|springer|acm)\b/i.test(lower)) {
+            return researchAgent;
+        }
+
+        return chatAgent;
     }
 
+    /**
+     * Fast Instant Search Need Classifier (0 ms overhead!)
+     */
+    static checkSearchNeed(text) {
+        if (!text) return false;
+        const lower = text.toLowerCase();
+
+        const searchKeywords = [
+            "carikan", "cari", "jurnal", "paper", "sinta", "berita", "terbaru", "hari ini",
+            "siapa", "dimana", "kapan", "mengapa", "kenapa", "berapa", "presiden", "juara",
+            "pildun", "piala dunia", "harga", "skor", "klasemen", "update", "2026", "2025",
+            "link", "url", "situs", "artikel", "sumber", "rektor", "rektornya", "hasil", "jadwal"
+        ];
+
+        return searchKeywords.some(kw => lower.includes(kw));
+    }
+
+    /**
+     * Build context-aware web search query for follow-up questions
+     */
     static buildSearchQuery(userText, history = []) {
         if (!history || history.length === 0) return userText;
 
@@ -187,85 +219,17 @@ class AiService {
         return userText;
     }
 
-    static async selectAgent(text, history = []) {
-        if (!text) return chatAgent;
-
-        const lower = text.toLowerCase();
-
-        if (["code", "coding", "react", "nextjs", "javascript", "typescript", "express", "api", "node"].some(k => lower.includes(k))) {
-            return codingAgent;
-        }
-
-        if (["docker", "ubuntu", "linux", "nginx", "pm2", "tailscale", "server", "ssh", "devops"].some(k => lower.includes(k))) {
-            return devopsAgent;
-        }
-
-        if (["jurnal", "paper", "penelitian", "research", "arxiv", "ieee", "sinta", "pdf"].some(k => lower.includes(k))) {
-            return researchAgent;
-        }
-
-        const routerPrompt = this.buildRouterContext(history, text);
-
-        try {
-            const response = await this.askWithFallback([
-                {
-                    role: "system",
-                    content: `You are an AI Multi-Agent Router. Analyze the user's input and select the best Agent token: CHAT, CODING, RESEARCH, or DEVOPS.`
-                },
-                { role: "user", content: routerPrompt }
-            ], 0.0, 10);
-
-            const token = response.trim().toUpperCase();
-            if (token.includes("CODING")) return codingAgent;
-            if (token.includes("RESEARCH")) return researchAgent;
-            if (token.includes("DEVOPS")) return devopsAgent;
-        } catch (err) {
-            Logger.warn("Agent Router fallback triggered:", err.message);
-        }
-
-        return chatAgent;
-    }
-
-    static async checkSearchNeed(text, history = []) {
-        if (!text) return false;
-
-        const lower = text.toLowerCase();
-        const explicitSearchKeywords = [
-            "carikan", "cari", "jurnal", "paper", "sinta", "berita", "terbaru", "hari ini",
-            "siapa", "dimana", "kapan", "mengapa", "kenapa", "berapa", "presiden", "juara",
-            "pildun", "piala dunia", "harga", "skor", "klasemen", "update", "2026", "2025",
-            "link", "url", "situs", "artikel", "sumber", "rektor", "rektornya"
-        ];
-
-        if (explicitSearchKeywords.some(kw => lower.includes(kw))) {
-            return true;
-        }
-
-        const routerPrompt = this.buildRouterContext(history, text);
-
-        try {
-            const response = await this.askWithFallback([
-                {
-                    role: "system",
-                    content: `Determine if the user's query requires real-time web search. Respond ONLY "YES" or "NO".`
-                },
-                { role: "user", content: routerPrompt }
-            ], 0.0, 10);
-
-            return response.trim().toUpperCase().includes("YES");
-        } catch (err) {
-            Logger.warn("Search check API error:", err.message);
-            return false;
-        }
-    }
-
-    static async askWithFallback(messages, temperature = 0.7, maxTokens = null) {
+    static async askWithFallback(messages, temperature = 0.7, maxTokens = CONFIG.LIMITS.MAX_TOKENS_GEN) {
         let lastError = null;
 
         for (const model of CONFIG.MODEL_CHAIN) {
             try {
-                const payload = { model, messages, temperature };
-                if (maxTokens) payload.max_tokens = maxTokens;
+                const payload = {
+                    model,
+                    messages,
+                    temperature,
+                    max_tokens: maxTokens
+                };
 
                 const response = await axios.post(
                     CONFIG.OPENROUTER_URL,
@@ -285,11 +249,11 @@ class AiService {
                 }
             } catch (err) {
                 lastError = err;
-                Logger.warn(`Model ${model} rate-limited/failed (${err.message}). Trying next model...`);
+                Logger.warn(`Model ${model} timeout/failed (${err.message}). Mencoba model berikutnya...`);
             }
         }
 
-        throw lastError || new Error("All models in MODEL_CHAIN failed.");
+        throw lastError || new Error("Semua model di MODEL_CHAIN gagal merespons.");
     }
 }
 
@@ -317,11 +281,11 @@ bot.start(async (ctx) => {
     await TelegramPresenter.reply(ctx,
         `Halo 👋
 
-Saya CitCat - Modular Production Multi-Agent System!
+Saya CitCat - High-Performance Multi-Agent System!
 
 Fitur Utama:
-• Memori Pembelajaran Singkatan/Akronim (Belajar Singkatan Baru)
-• Context-Aware Memory & Search
+• Ultra Fast Response (Kecepatan Tinggi)
+• Memori Pembelajaran Singkatan/Akronim
 • Research & Web Search Engine
 
 Perintah:
@@ -345,7 +309,7 @@ bot.command("singkatan", async (ctx) => {
     const keys = Object.keys(customDict);
 
     if (keys.length === 0) {
-        await TelegramPresenter.reply(ctx, "📖 Belum ada singkatan kustom yang dipelajari. Jika saya tidak tahu suatu singkatan, beri tahu saya dengan format: `UNIBA itu Universitas Balikpapan`!");
+        await TelegramPresenter.reply(ctx, "📖 Belum ada singkatan kustom yang dipelajari. Beri tahu saya format: `UNIBA itu Universitas Balikpapan`!");
         return;
     }
 
@@ -404,9 +368,8 @@ bot.on("text", async (ctx) => {
                 `🧠 *Memori Diperbarui!*\nSaya sudah menyimpan ingatan permanen bahwa **${shortForm.toUpperCase()}** adalah **${fullName}**.`
             );
 
-            // If user input had more text or a question, continue processing
             if (userText.length > shortForm.length + fullName.length + 15) {
-                // Continue to search with learned full name
+                // Continue with full query
             } else {
                 return;
             }
@@ -420,7 +383,7 @@ bot.on("text", async (ctx) => {
         else if (userMode === "RESEARCH") activeAgent = researchAgent;
         else if (userMode === "DEVOPS") activeAgent = devopsAgent;
         else {
-            activeAgent = await AiService.selectAgent(userText, chatHistory);
+            activeAgent = AiService.selectAgent(userText); // Instant local selection (0 ms)
         }
 
         Logger.info(`User (${chatId}) -> Active Agent: ${activeAgent.name} | Question: "${userText}"`);
@@ -436,7 +399,7 @@ bot.on("text", async (ctx) => {
             }
         }
 
-        const needsSearch = await AiService.checkSearchNeed(userText, chatHistory);
+        const needsSearch = AiService.checkSearchNeed(userText); // Instant local classification (0 ms)
         let searchContext = "";
 
         if (needsSearch && !documentContext) {
@@ -500,7 +463,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Production Multi-Agent System Active (Modular Architecture + Abbreviation Learning Engine)`);
+Logger.info(`CitCat Ultra-Fast Multi-Agent System Active (0ms Router Overhead)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

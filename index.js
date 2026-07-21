@@ -1000,13 +1000,25 @@ bot.on("text", async (ctx) => {
     }
 });
 
-bot.launch().then(() => {
-    Logger.info("Bot Telegraf sukses terhubung ke Telegram Server!");
-}).catch((err) => {
-    Logger.error("CRITICAL: Gagal meluncurkan Telegram Bot! Periksa TELEGRAM_TOKEN di .env:", err.message);
-});
+// Automatic Webhook Cleanup & Long Polling Launch Engine
+(async () => {
+    try {
+        if (!CONFIG.TELEGRAM_TOKEN) {
+            Logger.error("CRITICAL ERROR: TELEGRAM_TOKEN belum dikonfigurasi pada file .env!");
+            return;
+        }
 
-Logger.info(`CitCat Production System Active (Google Gemini 1.5 Pro Official Direct API Primary Engine)`);
+        Logger.info("Pembersihan Webhook lama & reset pending updates Telegram...");
+        await bot.telegram.deleteWebhook({ drop_pending_updates: true });
+
+        await bot.launch();
+        Logger.info("🚀 Bot CitCat sukses terhubung ke Telegram & aktif menerima pesan via Long Polling!");
+    } catch (err) {
+        Logger.error("CRITICAL ERROR saat meluncurkan Telegraf Bot:", err.message);
+    }
+})();
+
+Logger.info(`CitCat Production System Active (Automatic Webhook Reset & Polling Auto-Recovery Engine Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

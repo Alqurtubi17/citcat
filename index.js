@@ -39,16 +39,42 @@ const CONFIG = {
 };
 
 class Logger {
+    static logsBuffer = [];
+
+    static pushLog(level, message, args = []) {
+        const timeStr = new Date().toLocaleTimeString("id-ID", { hour12: false });
+        const argStr = args.length > 0 ? " " + args.map(a => typeof a === "object" ? JSON.stringify(a) : a).join(" ") : "";
+        const cleanMsg = `${message}${argStr}`.replace(/[`*_\\]/g, "");
+        const entry = `• \`[${timeStr}]\` *[${level}]* ${cleanMsg}`;
+
+        this.logsBuffer.push(entry);
+        if (this.logsBuffer.length > 50) {
+            this.logsBuffer.shift();
+        }
+    }
+
     static info(message, ...args) {
         console.log(`[INFO] [${new Date().toISOString()}] ${message}`, ...args);
+        this.pushLog("INFO", message, args);
     }
 
     static warn(message, ...args) {
         console.warn(`[WARN] [${new Date().toISOString()}] ${message}`, ...args);
+        this.pushLog("WARN", message, args);
     }
 
     static error(message, ...args) {
         console.error(`[ERROR] [${new Date().toISOString()}] ${message}`, ...args);
+        this.pushLog("ERROR", message, args);
+    }
+
+    static getRecentLogs(limit = 15) {
+        if (this.logsBuffer.length === 0) return ["(Belum ada log aktivitas tercatat)"];
+        return this.logsBuffer.slice(-limit);
+    }
+
+    static clearLogs() {
+        this.logsBuffer = [];
     }
 }
 
@@ -286,6 +312,7 @@ class AiService {
 
                 const content = response.data?.choices?.[0]?.message?.content;
                 if (content !== undefined && content !== null) {
+                    Logger.info(`Model ${model} sukses merespons.`);
                     return content;
                 }
             } catch (err) {
@@ -334,7 +361,10 @@ function getMainMenuMarkup() {
             Markup.button.callback("🤖 Atur Model AI", "SHOW_MODEL_SETTINGS")
         ],
         [
-            Markup.button.callback("🧠 Uteke Memori", "SHOW_UTEKE_MEMORIES"),
+            Markup.button.callback("📋 Cek Log Sistem", "SHOW_LOGS"),
+            Markup.button.callback("🧠 Uteke Memori", "SHOW_UTEKE_MEMORIES")
+        ],
+        [
             Markup.button.callback("🧹 Reset Memori", "RESET_MEMORY")
         ]
     ]);
@@ -371,6 +401,7 @@ const bot = new Telegraf(CONFIG.TELEGRAM_TOKEN);
 
 bot.telegram.setMyCommands([
     { command: "start", description: "Tampilkan menu utama & greeting" },
+    { command: "logs", description: "Tampilkan log aktivitas & error sistem penting" },
     { command: "ingat", description: "Simpan ingatan permanen Uteke Engine (/ingat <teks>)" },
     { command: "memori", description: "Lihat ingatan permanen Uteke Engine" },
     { command: "lupa", description: "Hapus ingatan permanen (/lupa <id_atau_kata>)" },
@@ -393,6 +424,18 @@ bot.start(async (ctx) => {
         `Halo 👋 Selamat datang di *CitCat Production AI Agent*!\n\nPilih mode spesialis dari menu tombol interaktif di bawah atau tekan tombol \`/\` di keyboard Telegram Anda:`,
         getMainMenuMarkup()
     );
+});
+
+// SYSTEM LOG COMMANDS
+bot.command(["logs", "log"], async (ctx) => {
+    const logs = Logger.getRecentLogs(15);
+    const logText = logs.join("\n");
+    await TelegramPresenter.reply(ctx, `📋 *Log Aktivitas Sistem Penting CitCat (15 Terakhir):*\n\n${logText}`);
+});
+
+bot.command("clearlogs", async (ctx) => {
+    Logger.clearLogs();
+    await TelegramPresenter.reply(ctx, "🧹 *Log sistem berhasil dibersihkan!*");
 });
 
 // UTEKE MEMORY ENGINE COMMANDS
@@ -469,6 +512,7 @@ bot.command("gantimodel", async (ctx) => {
 
     const newModel = parts[1].trim();
     ConfigManager.setPrimaryModel(newModel);
+    Logger.info(`Model utama diganti oleh pengguna ke: ${newModel}`);
     await TelegramPresenter.reply(ctx, `✅ *Model Utama Berhasil Diganti!*\n\nModel aktif sekarang: \`${newModel}\``);
 });
 
@@ -483,6 +527,7 @@ bot.command("tambahmodel", async (ctx) => {
     const newModel = parts[1].trim();
     ConfigManager.addModelToChain(newModel);
     const chain = ConfigManager.getModelChain();
+    Logger.info(`Model ${newModel} ditambahkan ke fallback chain.`);
     await TelegramPresenter.reply(ctx, `✅ *Model Berhasil Ditambahkan ke Fallback Chain!*\n\nDaftar Chain saat ini:\n${chain.map(m => `• \`${m}\``).join("\n")}`);
 });
 
@@ -498,6 +543,7 @@ bot.command("setkey", async (ctx) => {
     const keyValue = parts[2].trim();
 
     ConfigManager.setApiKey(keyName, keyValue);
+    Logger.info(`API Key ${keyName} berhasil diperbarui.`);
     await TelegramPresenter.reply(ctx, `🔑 *API Key Berhasil Disimpan!*\n\nKey: \`${keyName}\` (Tersimpan aman di memori server)`);
 });
 
@@ -508,6 +554,13 @@ bot.command("ocr", async (ctx) => {
 });
 
 // CALLBACK BUTTON HANDLERS
+bot.action("SHOW_LOGS", async (ctx) => {
+    const logs = Logger.getRecentLogs(15);
+    const logText = logs.join("\n");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, `📋 *Log Aktivitas Sistem Penting CitCat (15 Terakhir):*\n\n${logText}`);
+});
+
 bot.action("SHOW_UTEKE_MEMORIES", async (ctx) => {
     const chatId = String(ctx.chat.id);
     const memories = MemoryManager.getLongTermMemories(chatId);
@@ -545,36 +598,42 @@ bot.action("SHOW_MODEL_SETTINGS", async (ctx) => {
 
 bot.action("SET_MODEL_gemini_pro", async (ctx) => {
     ConfigManager.setPrimaryModel("google/gemini-1.5-pro");
+    Logger.info("Model diganti ke: google/gemini-1.5-pro");
     await ctx.answerCbQuery();
     await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemini-1.5-pro` (Direct Official Google Gemini Pro Engine)");
 });
 
 bot.action("SET_MODEL_llama70", async (ctx) => {
     ConfigManager.setPrimaryModel("meta-llama/llama-3.3-70b-instruct:free");
+    Logger.info("Model diganti ke: meta-llama/llama-3.3-70b-instruct:free");
     await ctx.answerCbQuery();
     await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `meta-llama/llama-3.3-70b-instruct:free`");
 });
 
 bot.action("SET_MODEL_qwen32", async (ctx) => {
     ConfigManager.setPrimaryModel("qwen/qwen-2.5-coder-32b-instruct:free");
+    Logger.info("Model diganti ke: qwen/qwen-2.5-coder-32b-instruct:free");
     await ctx.answerCbQuery();
     await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `qwen/qwen-2.5-coder-32b-instruct:free`");
 });
 
 bot.action("SET_MODEL_deepseek70", async (ctx) => {
     ConfigManager.setPrimaryModel("deepseek/deepseek-r1-distill-llama-70b:free");
+    Logger.info("Model diganti ke: deepseek/deepseek-r1-distill-llama-70b:free");
     await ctx.answerCbQuery();
     await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `deepseek/deepseek-r1-distill-llama-70b:free`");
 });
 
 bot.action("SET_MODEL_claude35", async (ctx) => {
     ConfigManager.setPrimaryModel("anthropic/claude-3.5-sonnet");
+    Logger.info("Model diganti ke: anthropic/claude-3.5-sonnet");
     await ctx.answerCbQuery();
     await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `anthropic/claude-3.5-sonnet`");
 });
 
 bot.action("SET_MODEL_gpt4o", async (ctx) => {
     ConfigManager.setPrimaryModel("openai/gpt-4o");
+    Logger.info("Model diganti ke: openai/gpt-4o");
     await ctx.answerCbQuery();
     await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `openai/gpt-4o`");
 });
@@ -610,6 +669,7 @@ bot.action("MODE_DEVOPS", async (ctx) => {
 bot.action("RESET_MEMORY", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.clear(chatId);
+    Logger.info(`Riwayat percakapan dihapus untuk chat: ${chatId}`);
     await ctx.answerCbQuery();
     await ctx.reply("🧹 Riwayat percakapan berhasil dihapus!");
 });
@@ -617,6 +677,7 @@ bot.action("RESET_MEMORY", async (ctx) => {
 bot.command("reset", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.clear(chatId);
+    Logger.info(`Riwayat percakapan dihapus untuk chat: ${chatId}`);
     await TelegramPresenter.reply(ctx, "🧹 Riwayat percakapan berhasil dihapus!");
 });
 
@@ -717,6 +778,7 @@ bot.on(["photo", "document"], async (ctx, next) => {
                 source: excelBuffer,
                 filename: "Hasil_OCR_Data.xlsx"
             });
+            Logger.info("Berhasil meng-generate file Excel (.xlsx) dari OCR.");
         }
 
         // Send PDF file ONLY if PDF is requested or if plain document text and user didn't ask ONLY Excel/Text
@@ -726,6 +788,7 @@ bot.on(["photo", "document"], async (ctx, next) => {
                 source: pdfBuffer,
                 filename: "Hasil_OCR_Dokumen.pdf"
             });
+            Logger.info("Berhasil meng-generate file PDF (.pdf) dari OCR.");
         }
 
     } catch (err) {
@@ -777,6 +840,7 @@ bot.on(["voice", "audio", "video", "document"], async (ctx) => {
             source: transcriptPdfBuffer,
             filename: "Transkrip_Lengkap.pdf"
         });
+        Logger.info("Berhasil meng-generate PDF Transkrip & Rangkuman Media.");
 
     } catch (err) {
         Logger.error("Media Processing Error:", err.message);
@@ -930,7 +994,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Production System Active (Google Gemini 1.5 Pro Official Direct API Primary Engine)`);
+Logger.info(`CitCat Production System Active (Live System Logs Monitor Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

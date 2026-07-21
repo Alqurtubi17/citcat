@@ -3,7 +3,7 @@ require("dotenv").config();
 const path = require("path");
 const axios = require("axios");
 const cheerio = require("cheerio");
-const { Telegraf } = require("telegraf");
+const { Telegraf, Markup } = require("telegraf");
 
 const { MemoryManager } = require("./memory");
 const { searchWeb } = require("./search");
@@ -272,42 +272,125 @@ class AiService {
 }
 
 class TelegramPresenter {
-    static async reply(ctx, text) {
+    static async reply(ctx, text, extra = {}) {
         const formattedText = TextSanitizer.convertTablesToBullets(text);
 
         try {
             await ctx.reply(formattedText, {
                 parse_mode: "Markdown",
-                disable_web_page_preview: true
+                disable_web_page_preview: true,
+                ...extra
             });
         } catch (err) {
             Logger.warn("Markdown parse failed, falling back to plain text:", err.message);
             await ctx.reply(formattedText, {
-                disable_web_page_preview: true
+                disable_web_page_preview: true,
+                ...extra
             });
         }
     }
 }
 
+function getMainMenuMarkup() {
+    return Markup.inlineKeyboard([
+        [
+            Markup.button.callback("🎙️ Transkrip & PDF", "MODE_TRANSCRIBE"),
+            Markup.button.callback("📚 Riset & Jurnal", "MODE_RESEARCH")
+        ],
+        [
+            Markup.button.callback("💻 Koding Specialist", "MODE_CODING"),
+            Markup.button.callback("🛠️ DevOps & Linux", "MODE_DEVOPS")
+        ],
+        [
+            Markup.button.callback("📖 Memori Singkatan", "SHOW_ABBREVIATIONS"),
+            Markup.button.callback("🧹 Reset Memori", "RESET_MEMORY")
+        ]
+    ]);
+}
+
+function isGreeting(text) {
+    if (!text) return false;
+    const lower = text.toLowerCase().trim();
+    const greetingWords = [
+        "halo", "hallo", "hi", "hai", "pagi", "selamat pagi", "selamat siang",
+        "selamat sore", "selamat malam", "ping", "p", "permisi", "tes", "test", "start"
+    ];
+    return greetingWords.includes(lower);
+}
+
 const bot = new Telegraf(CONFIG.TELEGRAM_TOKEN);
 
+// Register Native Telegram '/' Commands Menu
+bot.telegram.setMyCommands([
+    { command: "start", description: "Tampilkan menu utama & greeting" },
+    { command: "transcribe", description: "Transkrip Voice/Audio/Video ke PDF (Gemini Pro)" },
+    { command: "research", description: "Riset Jurnal & Paper Akademik" },
+    { command: "coding", description: "Bantuan Fullstack Koding & Scripting" },
+    { command: "devops", description: "Bantuan Server, Docker & Linux" },
+    { command: "chat", description: "Mode General Chat AI" },
+    { command: "singkatan", description: "Lihat memori singkatan kustom" },
+    { command: "reset", description: "Hapus riwayat percakapan" }
+]).catch(err => Logger.warn("SetMyCommands error:", err.message));
+
 bot.start(async (ctx) => {
-    await TelegramPresenter.reply(ctx,
-        `Halo 👋
-
-Saya CitCat - High-Performance Multi-Agent System!
-
-Agent Spesialis:
-🎙️ /transcribe - Transkrip Voice Note, Audio, Video & PDF (Google Gemini Pro)
-💻 /coding - Mode Coding Specialist (Node.js, React)
-📚 /research - Mode Research Specialist (Jurnal & Paper)
-🛠️ /devops - Mode DevOps Specialist (Docker, Linux, PM2)
-🤖 /chat - Mode General Chat
-
-Fitur Lainnya:
-/singkatan - lihat memori singkatan kustom
-/reset - Hapus riwayat chat`
+    await TelegramPresenter.reply(
+        ctx,
+        `Halo 👋 Selamat datang di *CitCat Production AI Agent*!\n\nPilih mode spesialis dari menu tombol interaktif di bawah atau tekan tombol \`/\` di keyboard Telegram Anda:`,
+        getMainMenuMarkup()
     );
+});
+
+// CALLBACK BUTTON HANDLERS
+bot.action("MODE_TRANSCRIBE", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    MemoryManager.setMode(chatId, "TRANSCRIBE");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "🎙️ Mode diaktifkan: *CitCat Transcribe Agent (Google Gemini Pro)*\n\nKirimkan file Voice Note, Audio (MP3/WAV/OGG), atau Video (MP4) langsung ke chat ini. Bot akan otomatis membuatkan **Transkrip Lengkap PDF** & **Rangkuman Inti PDF**!");
+});
+
+bot.action("MODE_RESEARCH", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    MemoryManager.setMode(chatId, "RESEARCH");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "📚 Mode diaktifkan: *Research Agent* (Jurnal, ArXiv, IEEE, PDF)\n\nSilakan tanyakan jurnal atau topik penelitian yang ingin Anda cari!");
+});
+
+bot.action("MODE_CODING", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    MemoryManager.setMode(chatId, "CODING");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "💻 Mode diaktifkan: *Coding Agent* (Node.js, React, TypeScript, Docker)\n\nSilakan tanyakan soal koding atau arsitektur sistem!");
+});
+
+bot.action("MODE_DEVOPS", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    MemoryManager.setMode(chatId, "DEVOPS");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "🛠️ Mode diaktifkan: *DevOps Agent* (Docker, Linux, Nginx, PM2, Tailscale)\n\nSilakan tanyakan seputar konfigurasi server dan perintah terminal!");
+});
+
+bot.action("SHOW_ABBREVIATIONS", async (ctx) => {
+    await ctx.answerCbQuery();
+    const customDict = MemoryManager.getCustomAbbreviations();
+    const keys = Object.keys(customDict);
+
+    if (keys.length === 0) {
+        await TelegramPresenter.reply(ctx, "📖 Belum ada singkatan kustom yang dipelajari. Beri tahu saya format: `UNIBA itu Universitas Balikpapan`!");
+        return;
+    }
+
+    const listText = keys
+        .map(k => `• *${k.toUpperCase()}*: ${customDict[k]}`)
+        .join("\n");
+
+    await TelegramPresenter.reply(ctx, `📖 *Singkatan Kustom Yang Diingat Bot:*\n\n${listText}`);
+});
+
+bot.action("RESET_MEMORY", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    MemoryManager.clear(chatId);
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "🧹 Riwayat percakapan berhasil dihapus!");
 });
 
 bot.command("reset", async (ctx) => {
@@ -374,9 +457,8 @@ bot.on(["voice", "audio", "video", "document"], async (ctx) => {
 
         const mimeType = message.voice ? "audio/ogg" : (fileObj.mime_type || "audio/mp3");
 
-        // Allow audio, video, or voice mime types
         if (!mimeType.includes("audio") && !mimeType.includes("video") && !mimeType.includes("ogg")) {
-            return; // Skip non-media document files
+            return;
         }
 
         await ctx.reply("🎙️ *Menerima file media...* Sedang memproses transkripsi & rangkuman via **Google Gemini Pro** (Mohon tunggu sebentar)...");
@@ -422,6 +504,16 @@ bot.on("text", async (ctx) => {
     if (!userText) return;
 
     try {
+        // GREETING DETECTOR
+        if (isGreeting(userText)) {
+            await TelegramPresenter.reply(
+                ctx,
+                `Halo 👋 Selamat datang di *CitCat Production AI Agent*!\n\nPilih mode spesialis dari menu tombol interaktif di bawah atau tekan tombol \`/\` di keyboard Telegram Anda:`,
+                getMainMenuMarkup()
+            );
+            return;
+        }
+
         await ctx.sendChatAction("typing");
 
         // 1. Detect User Teaching/Defining Abbreviation (e.g. "UNIBA itu Universitas Balikpapan")
@@ -535,7 +627,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Multi-Agent System Active (Transcribe Agent & Google Gemini Pro Media Integration Active)`);
+Logger.info(`CitCat Production System Active (Native Telegram '/' Menu + Interactive Inline Keyboards Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

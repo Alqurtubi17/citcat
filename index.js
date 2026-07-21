@@ -32,7 +32,7 @@ const CONFIG = {
     },
     TIMEOUTS: {
         ROUTER_MS: 5000,
-        OPENROUTER_MS: 30000,
+        OPENROUTER_MS: 35000,
         FETCH_MS: 8000
     }
 };
@@ -260,6 +260,8 @@ class AiService {
                     {
                         headers: {
                             Authorization: `Bearer ${openrouterKey}`,
+                            "HTTP-Referer": "https://github.com/Alqurtubi17/citcat",
+                            "X-Title": "CitCat Bot",
                             "Content-Type": "application/json"
                         },
                         timeout: CONFIG.TIMEOUTS.OPENROUTER_MS
@@ -272,7 +274,8 @@ class AiService {
                 }
             } catch (err) {
                 lastError = err;
-                Logger.warn(`Model ${model} timeout/failed (${err.message}). Mencoba model berikutnya...`);
+                const errDetail = err.response?.data?.error?.message || err.message;
+                Logger.warn(`Model ${model} timeout/failed (${errDetail}). Mencoba model berikutnya...`);
             }
         }
 
@@ -324,12 +327,12 @@ function getMainMenuMarkup() {
 function getModelPresetKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("⚡ Gemma 4 (26B)", "SET_MODEL_gemma26"),
-            Markup.button.callback("⚡ Gemma 4 (31B)", "SET_MODEL_gemma31")
+            Markup.button.callback("🦙 Llama 3.3 (70B)", "SET_MODEL_llama70"),
+            Markup.button.callback("⚡ Gemma 2 (9B)", "SET_MODEL_gemma29")
         ],
         [
-            Markup.button.callback("🤖 GPT OSS (20B)", "SET_MODEL_gptoss"),
-            Markup.button.callback("🦙 Llama 3.3 (70B)", "SET_MODEL_llama70")
+            Markup.button.callback("💻 Qwen 2.5 Coder (32B)", "SET_MODEL_qwen32"),
+            Markup.button.callback("🔍 DeepSeek R1 (70B)", "SET_MODEL_deepseek70")
         ],
         [
             Markup.button.callback("💎 Claude 3.5 Sonnet", "SET_MODEL_claude35"),
@@ -444,7 +447,7 @@ bot.command("gantimodel", async (ctx) => {
     const text = ctx.message.text.trim();
     const parts = text.split(/\s+/);
     if (parts.length < 2) {
-        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/gantimodel <nama_model>`\n\nContoh: `/gantimodel google/gemma-4-31b-it:free`");
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/gantimodel <nama_model>`\n\nContoh: `/gantimodel meta-llama/llama-3.3-70b-instruct:free`");
         return;
     }
 
@@ -524,28 +527,28 @@ bot.action("SHOW_MODEL_SETTINGS", async (ctx) => {
     await TelegramPresenter.reply(ctx, text, getModelPresetKeyboard());
 });
 
-bot.action("SET_MODEL_gemma26", async (ctx) => {
-    ConfigManager.setPrimaryModel("google/gemma-4-26b-a4b-it:free");
-    await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemma-4-26b-a4b-it:free`");
-});
-
-bot.action("SET_MODEL_gemma31", async (ctx) => {
-    ConfigManager.setPrimaryModel("google/gemma-4-31b-it:free");
-    await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemma-4-31b-it:free`");
-});
-
-bot.action("SET_MODEL_gptoss", async (ctx) => {
-    ConfigManager.setPrimaryModel("openai/gpt-oss-20b:free");
-    await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `openai/gpt-oss-20b:free`");
-});
-
 bot.action("SET_MODEL_llama70", async (ctx) => {
     ConfigManager.setPrimaryModel("meta-llama/llama-3.3-70b-instruct:free");
     await ctx.answerCbQuery();
     await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `meta-llama/llama-3.3-70b-instruct:free`");
+});
+
+bot.action("SET_MODEL_gemma29", async (ctx) => {
+    ConfigManager.setPrimaryModel("google/gemma-2-9b-it:free");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemma-2-9b-it:free`");
+});
+
+bot.action("SET_MODEL_qwen32", async (ctx) => {
+    ConfigManager.setPrimaryModel("qwen/qwen-2.5-coder-32b-instruct:free");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `qwen/qwen-2.5-coder-32b-instruct:free`");
+});
+
+bot.action("SET_MODEL_deepseek70", async (ctx) => {
+    ConfigManager.setPrimaryModel("deepseek/deepseek-r1-distill-llama-70b:free");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `deepseek/deepseek-r1-distill-llama-70b:free`");
 });
 
 bot.action("SET_MODEL_claude35", async (ctx) => {
@@ -905,13 +908,13 @@ bot.on("text", async (ctx) => {
 
     } catch (err) {
         Logger.error("Unhandled Bot Error:", err.message);
-        await TelegramPresenter.reply(ctx, "Terjadi kesalahan saat memproses permintaan.");
+        await TelegramPresenter.reply(ctx, `Terjadi kesalahan saat memproses permintaan: ${err.message}`);
     }
 });
 
 bot.launch();
 
-Logger.info(`CitCat Production System Active (Uteke Local-First Memory Engine Active)`);
+Logger.info(`CitCat Production System Active (Active OpenRouter Models Verified)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

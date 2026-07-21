@@ -978,8 +978,14 @@ bot.on("text", async (ctx) => {
             Logger.info(`Uteke Memory Engine recalled ${recalledMemories.length} relevant items for query "${userText}"`);
         }
 
-        const chatHistory = MemoryManager.getHistory(chatId);
-        const userMode = MemoryManager.getMode(chatId);
+        const isIdentityQuery = /^(kamu siapa|siapa kamu|siapa anda|anda siapa|siapa dirimu|apa nama bot|siapa pembuatmu|siapa namamu|siapa kamu\?|kamu siapa\?)$/i.test(userText.trim());
+
+        if (isIdentityQuery) {
+            const identityReply = "Saya adalah *CitCat Production AI Agent*, asisten cerdas berbasis **Google Gemini 1.5 Pro & Vision**.\n\nSaya memiliki 6 spesialisasi utama:\n• 🖼️ **OCR Vision & Exporter Excel (.xlsx)**\n• 🎙️ **Transkrip Voice/Audio/Video ke PDF**\n• 📚 **Riset & Jurnal Akademik (ARS Copilot)**\n• 💻 **Koding Fullstack Specialist**\n• 🛠️ **DevOps & Server Specialist**\n• 🧠 **Uteke Local-First Memory Engine**\n\nAda yang bisa saya bantu hari ini?";
+            MemoryManager.addMessagePair(chatId, userText, identityReply);
+            await TelegramPresenter.reply(ctx, identityReply);
+            return;
+        }
 
         let activeAgent = chatAgent;
         if (userMode === "CODING") activeAgent = codingAgent;

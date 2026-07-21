@@ -17,9 +17,9 @@ const CONFIG = {
     TELEGRAM_TOKEN: process.env.TELEGRAM_TOKEN,
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
     MODEL_CHAIN: [
-        process.env.MODEL || "openai/gpt-oss-20b:free",
-        "google/gemma-4-26b-a4b-it:free",
+        process.env.MODEL || "google/gemma-4-26b-a4b-it:free",
         "google/gemma-4-31b-it:free",
+        "openai/gpt-oss-20b:free",
         "cohere/north-mini-code:free"
     ],
     OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
@@ -66,7 +66,8 @@ class TextSanitizer {
             .replace(/<think>[\s\S]*?<\/think>/gi, "")
             .replace(/<br\s*\/?>/gi, "\n")
             .replace(/<[^>]*>?/gm, "")
-            .replace(/[\u4e00-\u9fa5]+/g, "")
+            .replace(/[\u0300-\u036f]/g, "")             // Remove combining diacritical marks (like sớṃ)
+            .replace(/[\u4e00-\u9fa5]+/g, "")             // Remove non-Latin Chinese characters
             .replace(/\\\[([\s\S]*?)\\]/g, "$1")
             .replace(/\\\(([\s\S]*?)\\\)/g, "$1")
             .trim();
@@ -478,7 +479,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Ultra-Fast Multi-Agent System Active (History Operation Intelligence Active)`);
+Logger.info(`CitCat Ultra-Fast Multi-Agent System Active (Gemma-4 Priority & Clean Diacritics Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

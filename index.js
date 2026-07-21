@@ -397,7 +397,15 @@ function isGreeting(text) {
     return greetingWords.includes(lower);
 }
 
+if (!CONFIG.TELEGRAM_TOKEN) {
+    Logger.error("CRITICAL ERROR: TELEGRAM_TOKEN belum dikonfigurasi pada file .env!");
+}
+
 const bot = new Telegraf(CONFIG.TELEGRAM_TOKEN);
+
+bot.catch((err, ctx) => {
+    Logger.error(`Telegraf Catch Error (${ctx?.updateType || "unknown"}):`, err.message);
+});
 
 bot.telegram.setMyCommands([
     { command: "start", description: "Tampilkan menu utama & greeting" },
@@ -992,9 +1000,13 @@ bot.on("text", async (ctx) => {
     }
 });
 
-bot.launch();
+bot.launch().then(() => {
+    Logger.info("Bot Telegraf sukses terhubung ke Telegram Server!");
+}).catch((err) => {
+    Logger.error("CRITICAL: Gagal meluncurkan Telegram Bot! Periksa TELEGRAM_TOKEN di .env:", err.message);
+});
 
-Logger.info(`CitCat Production System Active (Live System Logs Monitor Active)`);
+Logger.info(`CitCat Production System Active (Google Gemini 1.5 Pro Official Direct API Primary Engine)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

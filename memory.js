@@ -44,6 +44,19 @@ class MemoryManager {
         saveMemory(this.store);
     }
 
+    getCustomAbbreviations() {
+        return this.store._abbreviations || {};
+    }
+
+    setCustomAbbreviation(shortForm, fullName) {
+        if (!this.store._abbreviations) {
+            this.store._abbreviations = {};
+        }
+        const cleanKey = shortForm.toLowerCase().trim();
+        this.store._abbreviations[cleanKey] = fullName.trim();
+        saveMemory(this.store);
+    }
+
     addMessagePair(chatId, userText, assistantText) {
         if (!this.store[chatId]) {
             this.store[chatId] = { mode: "GENERAL", history: [] };

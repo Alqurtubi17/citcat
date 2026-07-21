@@ -1,5 +1,6 @@
 const axios = require("axios");
 const cheerio = require("cheerio");
+const { MemoryManager } = require("./memory");
 
 const SEARX_URL = process.env.SEARX_URL || "http://127.0.0.1:8080/search";
 const SEARCH_TIMEOUT_MS = 15000;
@@ -17,18 +18,29 @@ function expandQuery(query) {
     if (!query) return "";
     let q = query;
 
-    // Indonesian Institution & Topic Abbreviation Expansions
-    q = q.replace(/\but\b/gi, "Universitas Terbuka");
-    q = q.replace(/\bui\b/gi, "Universitas Indonesia");
-    q = q.replace(/\bitb\b/gi, "Institut Teknologi Bandung");
-    q = q.replace(/\bugm\b/gi, "Universitas Gadjah Mada");
-    q = q.replace(/\bunair\b/gi, "Universitas Airlangga");
-    q = q.replace(/\bundip\b/gi, "Universitas Diponegoro");
-    q = q.replace(/\bunpad\b/gi, "Universitas Padjadjaran");
-    q = q.replace(/\buns\b/gi, "Universitas Sebelas Maret");
-    q = q.replace(/\bits\b/gi, "Institut Teknologi Sepuluh Nopember");
-    q = q.replace(/\bipb\b/gi, "Institut Pertanian Bogor");
-    q = q.replace(/\bpildun\b/gi, "piala dunia");
+    // Built-in Default Dictionary
+    const defaultDict = {
+        ut: "Universitas Terbuka",
+        ui: "Universitas Indonesia",
+        itb: "Institut Teknologi Bandung",
+        ugm: "Universitas Gadjah Mada",
+        unair: "Universitas Airlangga",
+        undip: "Universitas Diponegoro",
+        unpad: "Universitas Padjadjaran",
+        uns: "Universitas Sebelas Maret",
+        its: "Institut Teknologi Sepuluh Nopember",
+        ipb: "Institut Pertanian Bogor",
+        pildun: "piala dunia"
+    };
+
+    // Combine with Learned Custom Abbreviations from memory.json
+    const customDict = MemoryManager.getCustomAbbreviations();
+    const fullDict = { ...defaultDict, ...customDict };
+
+    for (const [shortForm, fullName] of Object.entries(fullDict)) {
+        const regex = new RegExp(`\\b${shortForm}\\b`, "gi");
+        q = q.replace(regex, fullName);
+    }
 
     return q;
 }
@@ -51,7 +63,7 @@ async function searchWeb(query, maxResults = 15) {
         const optimizedQuery = prepareQuery(query);
         const results = [];
 
-        // 1. Try SearXNG JSON endpoint first (for 100% clean data)
+        // 1. Try SearXNG JSON endpoint first
         try {
             const jsonResponse = await axios.post(
                 SEARX_URL,
@@ -79,10 +91,10 @@ async function searchWeb(query, maxResults = 15) {
                 }
             }
         } catch (err) {
-            // JSON endpoint might be disabled or blocked, proceed to HTML parsing
+            // Proceed to HTML Cheerio parsing fallback
         }
 
-        // 2. HTML Cheerio parsing fallback if JSON endpoint returned no results
+        // 2. HTML Cheerio parsing fallback
         if (results.length === 0) {
             const htmlResponse = await axios.post(
                 SEARX_URL,

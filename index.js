@@ -165,9 +165,6 @@ class AiService {
             : currentText;
     }
 
-    /**
-     * Build context-aware web search query for follow-up questions
-     */
     static buildSearchQuery(userText, history = []) {
         if (!history || history.length === 0) return userText;
 
@@ -322,13 +319,13 @@ bot.start(async (ctx) => {
 
 Saya CitCat - Modular Production Multi-Agent System!
 
-Arsitektur Agents:
-• Chat Agent (Percakapan Umum & Konteks)
-• Research Agent (Jurnal, Paper & PDF Reader)
-• Coding Agent (Fullstack Node.js & React)
-• DevOps Agent (Docker, Linux, Nginx, PM2)
+Fitur Utama:
+• Memori Pembelajaran Singkatan/Akronim (Belajar Singkatan Baru)
+• Context-Aware Memory & Search
+• Research & Web Search Engine
 
-Perintah Mode:
+Perintah:
+/singkatan - Lihat daftar singkatan yang diingat bot
 /coding - Mode Coding Specialist
 /research - Mode Research Specialist
 /devops - Mode DevOps Specialist
@@ -341,6 +338,22 @@ bot.command("reset", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.clear(chatId);
     await TelegramPresenter.reply(ctx, "🧹 Riwayat percakapan berhasil dihapus!");
+});
+
+bot.command("singkatan", async (ctx) => {
+    const customDict = MemoryManager.getCustomAbbreviations();
+    const keys = Object.keys(customDict);
+
+    if (keys.length === 0) {
+        await TelegramPresenter.reply(ctx, "📖 Belum ada singkatan kustom yang dipelajari. Jika saya tidak tahu suatu singkatan, beri tahu saya dengan format: `UNIBA itu Universitas Balikpapan`!");
+        return;
+    }
+
+    const listText = keys
+        .map(k => `• *${k.toUpperCase()}*: ${customDict[k]}`)
+        .join("\n");
+
+    await TelegramPresenter.reply(ctx, `📖 *Singkatan Kustom Yang Diingat Bot:*\n\n${listText}`);
 });
 
 bot.command("coding", async (ctx) => {
@@ -375,6 +388,29 @@ bot.on("text", async (ctx) => {
 
     try {
         await ctx.sendChatAction("typing");
+
+        // 1. Detect User Teaching/Defining Abbreviation (e.g. "UNIBA itu Universitas Balikpapan")
+        const defRegex = /(?:maksudnya\s+)?([a-z0-9]{2,10})\s+(?:itu|adalah|singkatan dari|kepanjangannya|artinya)\s+(.+)/i;
+        const defMatch = userText.match(defRegex);
+
+        if (defMatch) {
+            const shortForm = defMatch[1].trim();
+            const fullName = defMatch[2].trim();
+
+            MemoryManager.setCustomAbbreviation(shortForm, fullName);
+            Logger.info(`Learned new abbreviation: ${shortForm.toUpperCase()} = "${fullName}"`);
+
+            await TelegramPresenter.reply(ctx,
+                `🧠 *Memori Diperbarui!*\nSaya sudah menyimpan ingatan permanen bahwa **${shortForm.toUpperCase()}** adalah **${fullName}**.`
+            );
+
+            // If user input had more text or a question, continue processing
+            if (userText.length > shortForm.length + fullName.length + 15) {
+                // Continue to search with learned full name
+            } else {
+                return;
+            }
+        }
 
         const chatHistory = MemoryManager.getHistory(chatId);
         const userMode = MemoryManager.getMode(chatId);
@@ -438,7 +474,6 @@ bot.on("text", async (ctx) => {
         let rawAnswer = await AiService.askWithFallback(messages);
         let finalAnswer = TextSanitizer.sanitizeOutput(rawAnswer);
 
-        // Fallback: If search payload resulted in empty answer, retry with pure conversational memory
         if (!finalAnswer && searchContext) {
             Logger.warn("Search payload resulted in empty response, falling back to conversational memory...");
             const fallbackMessages = [
@@ -465,7 +500,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Production Multi-Agent System Active (Modular Architecture)`);
+Logger.info(`CitCat Production Multi-Agent System Active (Modular Architecture + Abbreviation Learning Engine)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

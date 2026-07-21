@@ -138,6 +138,28 @@ class MemoryManager {
             .slice(0, limit);
     }
 
+    // --- RESPONSE FAST-CACHE ENGINE ---
+
+    getCachedResponse(queryText) {
+        if (!this.store._responseCache) return null;
+        const key = queryText.toLowerCase().trim().replace(/[?!.,]/g, "");
+        const cached = this.store._responseCache[key];
+        if (cached && Date.now() - cached.timestamp < 24 * 60 * 60 * 1000) { // 24-hour cache
+            return cached.text;
+        }
+        return null;
+    }
+
+    setCachedResponse(queryText, answerText) {
+        if (!this.store._responseCache) this.store._responseCache = {};
+        const key = queryText.toLowerCase().trim().replace(/[?!.,]/g, "");
+        this.store._responseCache[key] = {
+            text: answerText,
+            timestamp: Date.now()
+        };
+        saveMemory(this.store);
+    }
+
     addMessagePair(chatId, userText, assistantText) {
         if (!this.store[chatId]) {
             this.store[chatId] = { mode: "GENERAL", history: [] };
@@ -152,7 +174,12 @@ class MemoryManager {
             this.store[chatId].history = this.store[chatId].history.slice(-MAX_HISTORY);
         }
 
-        saveMemory(this.store);
+        // Cache short conversational queries for 0.05s instant answers
+        if (userText.length < 50 && assistantText) {
+            this.setCachedResponse(userText, assistantText);
+        } else {
+            saveMemory(this.store);
+        }
     }
 
     clear(chatId) {

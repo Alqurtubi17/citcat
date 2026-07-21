@@ -236,9 +236,15 @@ class AiService {
             return false;
         }
 
+        // 2. Identity / General Questions Bypass (Do NOT search web for identity)
+        const identityKeywords = ["kamu siapa", "siapa kamu", "siapa anda", "anda siapa", "siapa dirimu", "apa nama bot", "siapa pembuatmu"];
+        if (identityKeywords.some(kw => lower.includes(kw))) {
+            return false;
+        }
+
         const searchKeywords = [
             "carikan", "cari", "jurnal", "paper", "sinta", "berita", "terbaru", "hari ini",
-            "siapa", "dimana", "kapan", "mengapa", "kenapa", "berapa", "presiden", "juara",
+            "dimana", "kapan", "mengapa", "kenapa", "berapa", "presiden", "juara",
             "pildun", "piala dunia", "harga", "skor", "klasemen", "update", "2026", "2025",
             "link", "url", "situs", "artikel", "sumber", "rektor", "rektornya", "hasil", "jadwal"
         ];
@@ -925,6 +931,15 @@ bot.on("text", async (ctx) => {
                 `Halo 👋 Selamat datang di *CitCat Production AI Agent*!\n\nPilih mode spesialis dari menu tombol interaktif di bawah atau tekan tombol \`/\` di keyboard Telegram Anda:`,
                 getMainMenuMarkup()
             );
+            return;
+        }
+
+        // 0. UTEKE INSTANT MEMORY FAST-CACHE CHECK (0.01s Response)
+        const cachedAnswer = MemoryManager.getCachedResponse(userText);
+        if (cachedAnswer) {
+            Logger.info(`[Instant Fast-Cache Hit] Answered "${userText}" in 0.01s from Memory!`);
+            MemoryManager.addMessagePair(chatId, userText, cachedAnswer);
+            await TelegramPresenter.reply(ctx, cachedAnswer);
             return;
         }
 

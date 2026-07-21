@@ -4,12 +4,12 @@ const path = require("path");
 const CONFIG_PATH = path.join(__dirname, "config.json");
 
 const defaultConfig = {
-    primaryModel: process.env.MODEL || "meta-llama/llama-3.3-70b-instruct:free",
+    primaryModel: process.env.MODEL || "google/gemini-1.5-pro",
     modelChain: [
-        process.env.MODEL || "meta-llama/llama-3.3-70b-instruct:free",
-        "google/gemma-2-9b-it:free",
-        "qwen/qwen-2.5-coder-32b-instruct:free",
-        "deepseek/deepseek-r1-distill-llama-70b:free"
+        process.env.MODEL || "google/gemini-1.5-pro",
+        "google/gemini-1.5-flash",
+        "meta-llama/llama-3.3-70b-instruct:free",
+        "qwen/qwen-2.5-coder-32b-instruct:free"
     ],
     apiKeys: {
         OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || "",

@@ -12,6 +12,7 @@ const { createPdfBuffer } = require("./pdfService");
 const { createExcelBuffer } = require("./excelService");
 const { transcribeAndSummarizeMedia } = require("./mediaService");
 const { processImageOcr } = require("./ocrService");
+const { askGeminiDirect } = require("./geminiService");
 
 const chatAgent = require("./agents/chat");
 const codingAgent = require("./agents/coding");
@@ -242,6 +243,21 @@ class AiService {
 
     static async askWithFallback(messages, temperature = 0.2, maxTokens = CONFIG.LIMITS.MAX_TOKENS_GEN) {
         let lastError = null;
+
+        // 1. Try Direct Google Gemini Pro Official API First if GEMINI_API_KEY is configured
+        const geminiApiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
+        if (geminiApiKey) {
+            try {
+                Logger.info("Memanggil Google Gemini 1.5 Pro Official API (Pro Account)...");
+                const geminiReply = await askGeminiDirect(messages, temperature);
+                if (geminiReply) return geminiReply;
+            } catch (err) {
+                lastError = err;
+                Logger.warn(`Google Gemini Pro Direct API error (${err.message}). Melanjutkan ke OpenRouter Model Chain...`);
+            }
+        }
+
+        // 2. OpenRouter Model Chain Fallback
         const modelChain = ConfigManager.getModelChain();
         const openrouterKey = ConfigManager.getApiKey("OPENROUTER_API_KEY") || CONFIG.OPENROUTER_API_KEY;
 
@@ -279,7 +295,7 @@ class AiService {
             }
         }
 
-        throw lastError || new Error("Semua model di MODEL_CHAIN gagal merespons.");
+        throw lastError || new Error("Semua model (Google Gemini Pro & OpenRouter Chain) gagal merespons.");
     }
 }
 
@@ -327,8 +343,8 @@ function getMainMenuMarkup() {
 function getModelPresetKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("🦙 Llama 3.3 (70B)", "SET_MODEL_llama70"),
-            Markup.button.callback("⚡ Gemma 2 (9B)", "SET_MODEL_gemma29")
+            Markup.button.callback("✨ Gemini 1.5 Pro (Direct)", "SET_MODEL_gemini_pro"),
+            Markup.button.callback("🦙 Llama 3.3 (70B)", "SET_MODEL_llama70")
         ],
         [
             Markup.button.callback("💻 Qwen 2.5 Coder (32B)", "SET_MODEL_qwen32"),
@@ -447,7 +463,7 @@ bot.command("gantimodel", async (ctx) => {
     const text = ctx.message.text.trim();
     const parts = text.split(/\s+/);
     if (parts.length < 2) {
-        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/gantimodel <nama_model>`\n\nContoh: `/gantimodel meta-llama/llama-3.3-70b-instruct:free`");
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/gantimodel <nama_model>`\n\nContoh: `/gantimodel google/gemini-1.5-pro`");
         return;
     }
 
@@ -527,16 +543,16 @@ bot.action("SHOW_MODEL_SETTINGS", async (ctx) => {
     await TelegramPresenter.reply(ctx, text, getModelPresetKeyboard());
 });
 
+bot.action("SET_MODEL_gemini_pro", async (ctx) => {
+    ConfigManager.setPrimaryModel("google/gemini-1.5-pro");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemini-1.5-pro` (Direct Official Google Gemini Pro Engine)");
+});
+
 bot.action("SET_MODEL_llama70", async (ctx) => {
     ConfigManager.setPrimaryModel("meta-llama/llama-3.3-70b-instruct:free");
     await ctx.answerCbQuery();
     await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `meta-llama/llama-3.3-70b-instruct:free`");
-});
-
-bot.action("SET_MODEL_gemma29", async (ctx) => {
-    ConfigManager.setPrimaryModel("google/gemma-2-9b-it:free");
-    await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemma-2-9b-it:free`");
 });
 
 bot.action("SET_MODEL_qwen32", async (ctx) => {
@@ -914,7 +930,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Production System Active (Active OpenRouter Models Verified)`);
+Logger.info(`CitCat Production System Active (Google Gemini 1.5 Pro Official Direct API Primary Engine)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

@@ -189,14 +189,19 @@ class AiService {
         if (!text) return false;
         const lower = text.toLowerCase();
 
+        // 1. If explicitly asking to search/find ("carikan", "cari"), ALWAYS search!
+        const explicitSearchTrigger = ["carikan", "cari", "temukan", "lakukan pencarian"];
+        const isExplicitSearch = explicitSearchTrigger.some(kw => lower.includes(kw));
+
+        // 2. Pure History Operation Bypass
         const historyOperationKeywords = [
             "sebelumnya", "yang tadi", "di atas", "dari hasil", "dari jurnal",
-            "ringkas hasil", "buatkan ringkasan", "rangkumkan", "rangkum",
+            "ringkas hasil", "buatkan ringkasan dari", "rangkumkan dari",
             "terjemahkan ini", "jelaskan yang tadi", "nomor 1", "nomor 2", "point 1", "poin 1",
-            "tabelkan", "listkan"
+            "tabelkan hasil", "listkan hasil"
         ];
 
-        if (historyOperationKeywords.some(kw => lower.includes(kw))) {
+        if (!isExplicitSearch && historyOperationKeywords.some(kw => lower.includes(kw))) {
             Logger.info("Pesan meminta operasi dari riwayat percakapan -> Melewati pencarian web baru.");
             return false;
         }
@@ -320,7 +325,6 @@ function isGreeting(text) {
 
 const bot = new Telegraf(CONFIG.TELEGRAM_TOKEN);
 
-// Register Native Telegram '/' Commands Menu
 bot.telegram.setMyCommands([
     { command: "start", description: "Tampilkan menu utama & greeting" },
     { command: "transcribe", description: "Transkrip Voice/Audio/Video ke PDF (Gemini Pro)" },
@@ -340,7 +344,6 @@ bot.start(async (ctx) => {
     );
 });
 
-// CALLBACK BUTTON HANDLERS
 bot.action("MODE_TRANSCRIBE", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.setMode(chatId, "TRANSCRIBE");
@@ -375,7 +378,7 @@ bot.action("SHOW_ABBREVIATIONS", async (ctx) => {
     const keys = Object.keys(customDict);
 
     if (keys.length === 0) {
-        await TelegramPresenter.reply(ctx, "📖 Belum ada singkatan kustom yang dipelajari. Beri tahu saya format: `UNIBA itu Universitas Balikpapan`!");
+        await ctx.reply("📖 Belum ada singkatan kustom yang dipelajari. Beri tahu saya format: `UNIBA itu Universitas Balikpapan`!", { parse_mode: "Markdown" });
         return;
     }
 
@@ -383,14 +386,14 @@ bot.action("SHOW_ABBREVIATIONS", async (ctx) => {
         .map(k => `• *${k.toUpperCase()}*: ${customDict[k]}`)
         .join("\n");
 
-    await TelegramPresenter.reply(ctx, `📖 *Singkatan Kustom Yang Diingat Bot:*\n\n${listText}`);
+    await ctx.reply(`📖 *Singkatan Kustom Yang Diingat Bot:*\n\n${listText}`, { parse_mode: "Markdown" });
 });
 
 bot.action("RESET_MEMORY", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.clear(chatId);
     await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "🧹 Riwayat percakapan berhasil dihapus!");
+    await ctx.reply("🧹 Riwayat percakapan berhasil dihapus!", { parse_mode: "Markdown" });
 });
 
 bot.command("reset", async (ctx) => {
@@ -504,7 +507,6 @@ bot.on("text", async (ctx) => {
     if (!userText) return;
 
     try {
-        // GREETING DETECTOR
         if (isGreeting(userText)) {
             await TelegramPresenter.reply(
                 ctx,
@@ -590,7 +592,7 @@ bot.on("text", async (ctx) => {
         if (documentContext) {
             finalUserPayload = `DOKUMEN TERLAMPIR:\n${documentContext}\n\nPERTANYAAN USER:\n${userText}`;
         } else if (searchContext) {
-            finalUserPayload = `HASIL PENCARIAN WEB REAL-TIME:\n${searchContext}\n\nPERTANYAAN USER:\n${userText}`;
+            finalUserPayload = `HASIL PENCARIAN WEB REAL-TIME (DILARANG MENGARANG DOI/LINK BUATAN SENDIRI, HANYA GUNAKAN URL ASLI TERTERA):\n${searchContext}\n\nPERTANYAAN USER:\n${userText}\n\nPetunjuk Ketat: HANYA tampilkan Judul Jurnal Utuh dan URL ASLI yang tertera di atas. DILARANG MERUBAH ATAU MEMBUAT DOI/LINK MENTAH BUATAN SENDIRI.`;
         }
 
         messages.push({
@@ -627,7 +629,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Production System Active (Native Telegram '/' Menu + Interactive Inline Keyboards Active)`);
+Logger.info(`CitCat Production System Active (Explicit Search Trigger Priority Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

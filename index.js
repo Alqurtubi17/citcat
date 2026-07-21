@@ -315,6 +315,7 @@ function getMainMenuMarkup() {
             Markup.button.callback("🤖 Atur Model AI", "SHOW_MODEL_SETTINGS")
         ],
         [
+            Markup.button.callback("🧠 Uteke Memori", "SHOW_UTEKE_MEMORIES"),
             Markup.button.callback("🧹 Reset Memori", "RESET_MEMORY")
         ]
     ]);
@@ -351,6 +352,9 @@ const bot = new Telegraf(CONFIG.TELEGRAM_TOKEN);
 
 bot.telegram.setMyCommands([
     { command: "start", description: "Tampilkan menu utama & greeting" },
+    { command: "ingat", description: "Simpan ingatan permanen Uteke Engine (/ingat <teks>)" },
+    { command: "memori", description: "Lihat ingatan permanen Uteke Engine" },
+    { command: "lupa", description: "Hapus ingatan permanen (/lupa <id_atau_kata>)" },
     { command: "ocr", description: "OCR Foto/Dokumen ke Excel & PDF (Gemini Vision)" },
     { command: "transcribe", description: "Transkrip Voice/Audio/Video ke PDF (Gemini Pro)" },
     { command: "model", description: "Cek & ganti model AI aktif" },
@@ -370,6 +374,59 @@ bot.start(async (ctx) => {
         `Halo 👋 Selamat datang di *CitCat Production AI Agent*!\n\nPilih mode spesialis dari menu tombol interaktif di bawah atau tekan tombol \`/\` di keyboard Telegram Anda:`,
         getMainMenuMarkup()
     );
+});
+
+// UTEKE MEMORY ENGINE COMMANDS
+bot.command("ingat", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const text = ctx.message.text.trim();
+    const parts = text.split(/\s+/);
+
+    if (parts.length < 2) {
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/ingat <informasi_penting>`\n\nContoh:\n`/ingat Email dosen: dosen@uniba.ac.id`\n`/ingat Username server VPS: root 103.12.1.5`");
+        return;
+    }
+
+    const memoryContent = parts.slice(1).join(" ");
+    const saved = MemoryManager.storeLongTermMemory(chatId, memoryContent);
+
+    await TelegramPresenter.reply(ctx, `🧠 *Uteke Memory Engine - Saved!*\n\nInformasi berhasil disimpan ke ingatan jangka panjang:\n• ID: \`${saved.id}\`\n• Isi: "${saved.text}"`);
+});
+
+bot.command(["memori", "ingatan"], async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const memories = MemoryManager.getLongTermMemories(chatId);
+
+    if (memories.length === 0) {
+        await TelegramPresenter.reply(ctx, "🧠 *Uteke Memory Engine Kosong*\nBelum ada ingatan jangka panjang tersimpan. Ketik `/ingat <informasi>` untuk menyimpan!");
+        return;
+    }
+
+    const memoryList = memories
+        .map((m, i) => `${i + 1}. [\`${m.id}\`] ${m.text}`)
+        .join("\n");
+
+    await TelegramPresenter.reply(ctx, `🧠 *Daftar Ingatan Jangka Panjang Uteke Engine:*\n\n${memoryList}\n\n*Hapus Ingatan:* `/lupa <id_atau_kata>``);
+});
+
+bot.command("lupa", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const text = ctx.message.text.trim();
+    const parts = text.split(/\s+/);
+
+    if (parts.length < 2) {
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/lupa <id_atau_kata_kunci>`\n\nContoh: `/lupa dosen` atau `/lupa 1a2b3c`");
+        return;
+    }
+
+    const query = parts.slice(1).join(" ");
+    const deleted = MemoryManager.deleteLongTermMemory(chatId, query);
+
+    if (deleted) {
+        await TelegramPresenter.reply(ctx, `🗑️ *Ingatan Berhasil Dihapus!* (${query})`);
+    } else {
+        await TelegramPresenter.reply(ctx, `⚠️ Ingatan tidak ditemukan untuk: "${query}"`);
+    }
 });
 
 // MODEL COMMANDS
@@ -432,6 +489,23 @@ bot.command("ocr", async (ctx) => {
 });
 
 // CALLBACK BUTTON HANDLERS
+bot.action("SHOW_UTEKE_MEMORIES", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const memories = MemoryManager.getLongTermMemories(chatId);
+    await ctx.answerCbQuery();
+
+    if (memories.length === 0) {
+        await TelegramPresenter.reply(ctx, "🧠 *Uteke Memory Engine Kosong*\nBelum ada ingatan jangka panjang tersimpan. Ketik `/ingat <informasi>` untuk menyimpan!");
+        return;
+    }
+
+    const memoryList = memories
+        .map((m, i) => `${i + 1}. [\`${m.id}\`] ${m.text}`)
+        .join("\n");
+
+    await TelegramPresenter.reply(ctx, `🧠 *Daftar Ingatan Jangka Panjang Uteke Engine:*\n\n${memoryList}\n\n*Hapus Ingatan:* `/lupa <id_atau_kata>``);
+});
+
 bot.action("MODE_OCR", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.setMode(chatId, "OCR");
@@ -731,6 +805,17 @@ bot.on("text", async (ctx) => {
             }
         }
 
+        // 2. UTEKE SEMANTIC RECALL ENGINE
+        const recalledMemories = MemoryManager.recallMemories(chatId, userText);
+        let utekeMemoryContext = "";
+
+        if (recalledMemories.length > 0) {
+            utekeMemoryContext = recalledMemories
+                .map(m => `• [Uteke Memory]: ${m.text}`)
+                .join("\n");
+            Logger.info(`Uteke Memory Engine recalled ${recalledMemories.length} relevant items for query "${userText}"`);
+        }
+
         const chatHistory = MemoryManager.getHistory(chatId);
         const userMode = MemoryManager.getMode(chatId);
 
@@ -781,10 +866,15 @@ bot.on("text", async (ctx) => {
         ];
 
         let finalUserPayload = userText;
+
+        if (utekeMemoryContext) {
+            finalUserPayload = `INGATAN JANGKA PANJANG UTEKE (INGATAN PENGGUNA RELEVAN):\n${utekeMemoryContext}\n\n${finalUserPayload}`;
+        }
+
         if (documentContext) {
-            finalUserPayload = `DOKUMEN TERLAMPIR:\n${documentContext}\n\nPERTANYAAN USER:\n${userText}`;
+            finalUserPayload = `DOKUMEN TERLAMPIR:\n${documentContext}\n\nPERTANYAAN USER:\n${finalUserPayload}`;
         } else if (searchContext) {
-            finalUserPayload = `HASIL PENCARIAN WEB REAL-TIME (DILARANG MENGARANG DOI/LINK BUATAN SENDIRI, HANYA GUNAKAN URL ASLI TERTERA):\n${searchContext}\n\nPERTANYAAN USER:\n${userText}\n\nPetunjuk Ketat: HANYA tampilkan Judul Jurnal Utuh dan URL ASLI yang tertera di atas. DILARANG MERUBAH ATAU MEMBUAT DOI/LINK MENTAH BUATAN SENDIRI.`;
+            finalUserPayload = `HASIL PENCARIAN WEB REAL-TIME (DILARANG MENGARANG DOI/LINK BUATAN SENDIRI, HANYA GUNAKAN URL ASLI TERTERA):\n${searchContext}\n\nPERTANYAAN USER:\n${finalUserPayload}\n\nPetunjuk Ketat: HANYA tampilkan Judul Jurnal Utuh dan URL ASLI yang tertera di atas. DILARANG MERUBAH ATAU MEMBUAT DOI/LINK MENTAH BUATAN SENDIRI.`;
         }
 
         messages.push({
@@ -821,7 +911,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Production System Active (Smart User Caption Format Filter Active)`);
+Logger.info(`CitCat Production System Active (Uteke Local-First Memory Engine Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

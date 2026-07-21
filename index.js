@@ -271,16 +271,22 @@ class AiService {
     static async askWithFallback(messages, temperature = 0.2, maxTokens = CONFIG.LIMITS.MAX_TOKENS_GEN) {
         let lastError = null;
 
-        // 1. Try Direct Google Gemini Pro Official API First if GEMINI_API_KEY is configured
+        // 1. Try Direct Google Gemini Flash Official API First (Ultra-Fast 1-2s Response Engine)
         const geminiApiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
         if (geminiApiKey) {
             try {
-                Logger.info("Memanggil Google Gemini 1.5 Pro Official API (Pro Account)...");
-                const geminiReply = await askGeminiDirect(messages, temperature);
-                if (geminiReply) return geminiReply;
+                Logger.info("Memanggil Google Gemini 1.5 Flash Direct API (Ultra-Fast Engine)...");
+                const geminiFlashReply = await askGeminiDirect(messages, temperature, "gemini-1.5-flash");
+                if (geminiFlashReply) return geminiFlashReply;
             } catch (err) {
                 lastError = err;
-                Logger.warn(`Google Gemini Pro Direct API error (${err.message}). Melanjutkan ke OpenRouter Model Chain...`);
+                Logger.warn(`Google Gemini Flash Direct API error (${err.message}). Mencoba Gemini Pro...`);
+                try {
+                    const geminiProReply = await askGeminiDirect(messages, temperature, "gemini-1.5-pro");
+                    if (geminiProReply) return geminiProReply;
+                } catch (proErr) {
+                    Logger.warn(`Google Gemini Pro Direct API error (${proErr.message}). Melanjutkan ke OpenRouter Model Chain...`);
+                }
             }
         }
 

@@ -1,20 +1,21 @@
 const axios = require("axios");
 const { ConfigManager } = require("./configManager");
 
-const GEMINI_DIRECT_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent";
-
 /**
- * Direct call to Google Gemini 1.5 Pro API using user's official GEMINI_API_KEY
+ * Direct call to Google Gemini Official API using user's official GEMINI_API_KEY
  * @param {Array<{role: string, content: string}>} messages
  * @param {number} temperature
+ * @param {string} modelName Default: "gemini-1.5-flash" (Ultra fast 1-2s response)
  * @returns {Promise<string>}
  */
-async function askGeminiDirect(messages, temperature = 0.2) {
+async function askGeminiDirect(messages, temperature = 0.2, modelName = "gemini-1.5-flash") {
     const apiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
 
     if (!apiKey) {
         throw new Error("GEMINI_API_KEY tidak ditemukan. Silakan atur dengan: `/setkey GEMINI_API_KEY <api_key>`");
     }
+
+    const endpointUrl = `https://generativelanguage.googleapis.com/v1beta/models/${modelName}:generateContent`;
 
     // Format chat history into Gemini contents payload
     const contents = [];
@@ -48,22 +49,22 @@ async function askGeminiDirect(messages, temperature = 0.2) {
 
     payload.generationConfig = {
         temperature: temperature,
-        maxOutputTokens: 2048
+        maxOutputTokens: 1500
     };
 
     const response = await axios.post(
-        `${GEMINI_DIRECT_URL}?key=${apiKey}`,
+        `${endpointUrl}?key=${apiKey}`,
         payload,
         {
             headers: { "Content-Type": "application/json" },
-            timeout: 45000
+            timeout: 25000
         }
     );
 
     const replyText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text;
 
     if (!replyText) {
-        throw new Error("Respon dari Google Gemini 1.5 Pro kosong.");
+        throw new Error(`Respon dari Google ${modelName} kosong.`);
     }
 
     return replyText;

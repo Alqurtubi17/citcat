@@ -1,7 +1,7 @@
 const XLSX = require("xlsx");
 
 /**
- * Reads and parses an Excel (.xlsx / .xls / .csv) file buffer into text/structured text per sheet
+ * Reads and parses an Excel (.xlsx / .xls / .csv) file buffer into concise text per sheet
  * @param {Buffer} buffer
  * @param {string} filename
  * @returns {string} Formatted text representation of all sheets
@@ -24,10 +24,12 @@ function parseExcelFileBuffer(buffer, filename = "document.xlsx") {
 
             const sheetLines = jsonData
                 .filter(row => Array.isArray(row) && row.some(cell => cell !== null && cell !== undefined && String(cell).trim() !== ""))
-                .map(row => row.map(cell => String(cell).trim()).join(" | "))
+                .map(row => row.map(cell => String(cell || "").trim()).filter(Boolean).join(" | "))
+                .filter(Boolean)
                 .join("\n");
 
-            resultText += sheetLines.substring(0, 20000) + "\n";
+            // Cap at 6000 chars per sheet for maximum processing speed (1-2s response time)
+            resultText += sheetLines.substring(0, 6000) + "\n";
         }
 
         return resultText;

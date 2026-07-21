@@ -428,7 +428,7 @@ bot.command("setkey", async (ctx) => {
 bot.command("ocr", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.setMode(chatId, "OCR");
-    await TelegramPresenter.reply(ctx, "🖼️ Mode diaktifkan: *OCR Vision & Data Specialist (Google Gemini Vision)*\n\nKirimkan foto/scan dokumen, kuitansi, nota, atau tabel. Bot akan mengekstrak teksnya dan mengonversi ke **File Excel (.xlsx)** & **PDF**!");
+    await TelegramPresenter.reply(ctx, "🖼️ Mode diaktifkan: *OCR Vision & Data Specialist (Google Gemini Vision)*\n\nKirimkan foto/scan dokumen, kuitansi, nota, atau tabel. Bot akan mengekstrak teksnya dan mengonversi sesuai permintaan Anda (**Excel .xlsx**, **PDF**, atau **Teks**)!");
 });
 
 // CALLBACK BUTTON HANDLERS
@@ -436,7 +436,7 @@ bot.action("MODE_OCR", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.setMode(chatId, "OCR");
     await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "🖼️ Mode diaktifkan: *OCR Vision & Data Specialist (Google Gemini Vision)*\n\nKirimkan foto/scan dokumen, kuitansi, nota, atau tabel. Bot akan mengekstrak teksnya dan mengonversi ke **File Excel (.xlsx)** & **PDF**!");
+    await TelegramPresenter.reply(ctx, "🖼️ Mode diaktifkan: *OCR Vision & Data Specialist (Google Gemini Vision)*\n\nKirimkan foto/scan dokumen, kuitansi, nota, atau tabel. Bot akan mengekstrak teksnya dan mengonversi sesuai permintaan Anda (**Excel .xlsx**, **PDF**, atau **Teks**)!");
 });
 
 bot.action("SHOW_MODEL_SETTINGS", async (ctx) => {
@@ -518,7 +518,7 @@ bot.action("RESET_MEMORY", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.clear(chatId);
     await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "🧹 Riwayat percakapan berhasil dihapus!");
+    await ctx.reply("🧹 Riwayat percakapan berhasil dihapus!");
 });
 
 bot.command("reset", async (ctx) => {
@@ -575,7 +575,7 @@ bot.command("chat", async (ctx) => {
     await TelegramPresenter.reply(ctx, "🤖 Mode diaktifkan: *General Chat Agent*");
 });
 
-// PHOTO & IMAGE OCR HANDLER
+// PHOTO & IMAGE OCR HANDLER (SMART FORMAT EXTRACTOR)
 bot.on(["photo", "document"], async (ctx, next) => {
     try {
         const message = ctx.message;
@@ -586,7 +586,7 @@ bot.on(["photo", "document"], async (ctx, next) => {
         let mimeType = "image/jpeg";
 
         if (photos && photos.length > 0) {
-            fileId = photos[photos.length - 1].file_id; // Get highest resolution photo
+            fileId = photos[photos.length - 1].file_id;
         } else if (document && document.mime_type && document.mime_type.startsWith("image/")) {
             fileId = document.file_id;
             mimeType = document.mime_type;
@@ -594,9 +594,10 @@ bot.on(["photo", "document"], async (ctx, next) => {
 
         if (!fileId) return next();
 
-        const userCaption = message.caption || "";
+        const rawCaption = message.caption || "";
+        const userCaption = rawCaption.toLowerCase().trim();
 
-        await ctx.reply("🖼️ *Menerima foto/dokumen...* Sedang mengekstrak teks & tabel via **Google Gemini Vision AI**...");
+        await ctx.reply("🖼️ *Menerima foto/dokumen...* Sedang mengekstrak teks via **Google Gemini Vision AI**...");
         await ctx.sendChatAction("upload_document");
 
         const fileLink = await ctx.telegram.getFileLink(fileId);
@@ -606,27 +607,33 @@ bot.on(["photo", "document"], async (ctx, next) => {
 
         Logger.info(`Processing Vision OCR (${imageBuffer.length} bytes)...`);
 
-        const { ocrText, tableData } = await processImageOcr(imageBuffer, mimeType, userCaption);
+        const { ocrText, tableData } = await processImageOcr(imageBuffer, mimeType, rawCaption);
 
-        await ctx.reply("📊 *OCR Selesai!* Menggenerasi berkas dokumen...");
+        const asksExcel = /\b(excel|xlsx|csv|tabel|spreadsheet|kuitansi|nota|invoice)\b/i.test(userCaption);
+        const asksPdf = /\b(pdf|dokumen|document)\b/i.test(userCaption);
+        const asksText = /\b(teks|text|baca|ketik)\b/i.test(userCaption);
 
-        const pdfBuffer = await createPdfBuffer("HASIL OCR DOKUMEN (Google Gemini Vision)", ocrText);
+        const textPreview = TextSanitizer.sanitizeOutput(ocrText).substring(0, 1200);
+        await TelegramPresenter.reply(ctx, `📌 *HASIL OCR:* \n\n${textPreview}`);
 
-        const dataToExport = tableData || ocrText;
-        const excelBuffer = createExcelBuffer(dataToExport, "Hasil_OCR");
+        // Send Excel file ONLY if Excel is requested or if tableData exists and user didn't explicitly ask ONLY PDF/Text
+        if (asksExcel || (tableData && !asksPdf && !asksText)) {
+            const dataToExport = tableData || ocrText;
+            const excelBuffer = createExcelBuffer(dataToExport, "Hasil_OCR");
+            await ctx.replyWithDocument({
+                source: excelBuffer,
+                filename: "Hasil_OCR_Data.xlsx"
+            });
+        }
 
-        const textPreview = TextSanitizer.sanitizeOutput(ocrText).substring(0, 1000);
-        await TelegramPresenter.reply(ctx, `📌 *HASIL TEKS OCR:* \n\n${textPreview}\n\n*(Berkas Excel & PDF terlampir di bawah)*`);
-
-        await ctx.replyWithDocument({
-            source: excelBuffer,
-            filename: "Hasil_OCR_Data.xlsx"
-        });
-
-        await ctx.replyWithDocument({
-            source: pdfBuffer,
-            filename: "Hasil_OCR_Dokumen.pdf"
-        });
+        // Send PDF file ONLY if PDF is requested or if plain document text and user didn't ask ONLY Excel/Text
+        if (asksPdf || (!tableData && !asksExcel && !asksText)) {
+            const pdfBuffer = await createPdfBuffer("HASIL OCR DOKUMEN (Google Gemini Vision)", ocrText);
+            await ctx.replyWithDocument({
+                source: pdfBuffer,
+                filename: "Hasil_OCR_Dokumen.pdf"
+            });
+        }
 
     } catch (err) {
         Logger.error("OCR Processing Error:", err.message);
@@ -814,7 +821,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Production System Active (Google Gemini Vision OCR & Excel Export Engine Active)`);
+Logger.info(`CitCat Production System Active (Smart User Caption Format Filter Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

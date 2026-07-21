@@ -1,11 +1,13 @@
 const axios = require("axios");
+const { ConfigManager } = require("./configManager");
 
-const GEMINI_API_KEY = process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY;
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent";
 
 async function transcribeAndSummarizeMedia(buffer, mimeType = "audio/ogg") {
-    if (!GEMINI_API_KEY) {
-        throw new Error("GEMINI_API_KEY belum dikonfigurasi di file .env. Mohon isi GEMINI_API_KEY terlebih dahulu.");
+    const apiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
+
+    if (!apiKey) {
+        throw new Error("GEMINI_API_KEY belum dikonfigurasi. Silakan atur dengan perintah:\n`/setkey GEMINI_API_KEY <api_key_anda>`");
     }
 
     const base64Data = buffer.toString("base64");
@@ -26,7 +28,7 @@ Wajib gunakan pemisah tag ini secara tepat:
 ---RANGKUMAN_AKHIR---`;
 
     const response = await axios.post(
-        `${GEMINI_URL}?key=${GEMINI_API_KEY}`,
+        `${GEMINI_URL}?key=${apiKey}`,
         {
             contents: [
                 {
@@ -44,7 +46,7 @@ Wajib gunakan pemisah tag ini secara tepat:
         },
         {
             headers: { "Content-Type": "application/json" },
-            timeout: 180000 // 3 minutes for media transcription
+            timeout: 180000
         }
     );
 

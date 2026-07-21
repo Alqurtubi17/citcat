@@ -6,6 +6,7 @@ const cheerio = require("cheerio");
 const { Telegraf, Markup } = require("telegraf");
 
 const { MemoryManager } = require("./memory");
+const { ConfigManager } = require("./configManager");
 const { searchWeb } = require("./search");
 const { createPdfBuffer } = require("./pdfService");
 const { transcribeAndSummarizeMedia } = require("./mediaService");
@@ -19,12 +20,6 @@ const transcribeAgent = require("./agents/transcribe");
 const CONFIG = {
     TELEGRAM_TOKEN: process.env.TELEGRAM_TOKEN,
     OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY,
-    MODEL_CHAIN: [
-        process.env.MODEL || "google/gemma-4-26b-a4b-it:free",
-        "google/gemma-4-31b-it:free",
-        "openai/gpt-oss-20b:free",
-        "cohere/north-mini-code:free"
-    ],
     OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
     LIMITS: {
         MAX_INPUT_LENGTH: 2000,
@@ -240,8 +235,10 @@ class AiService {
 
     static async askWithFallback(messages, temperature = 0.2, maxTokens = CONFIG.LIMITS.MAX_TOKENS_GEN) {
         let lastError = null;
+        const modelChain = ConfigManager.getModelChain();
+        const openrouterKey = ConfigManager.getApiKey("OPENROUTER_API_KEY") || CONFIG.OPENROUTER_API_KEY;
 
-        for (const model of CONFIG.MODEL_CHAIN) {
+        for (const model of modelChain) {
             try {
                 const payload = {
                     model,
@@ -255,7 +252,7 @@ class AiService {
                     payload,
                     {
                         headers: {
-                            Authorization: `Bearer ${CONFIG.OPENROUTER_API_KEY}`,
+                            Authorization: `Bearer ${openrouterKey}`,
                             "Content-Type": "application/json"
                         },
                         timeout: CONFIG.TIMEOUTS.OPENROUTER_MS
@@ -307,8 +304,25 @@ function getMainMenuMarkup() {
             Markup.button.callback("🛠️ DevOps & Linux", "MODE_DEVOPS")
         ],
         [
-            Markup.button.callback("📖 Memori Singkatan", "SHOW_ABBREVIATIONS"),
+            Markup.button.callback("🤖 Atur Model AI", "SHOW_MODEL_SETTINGS"),
             Markup.button.callback("🧹 Reset Memori", "RESET_MEMORY")
+        ]
+    ]);
+}
+
+function getModelPresetKeyboard() {
+    return Markup.inlineKeyboard([
+        [
+            Markup.button.callback("⚡ Gemma 4 (26B)", "SET_MODEL_gemma26"),
+            Markup.button.callback("⚡ Gemma 4 (31B)", "SET_MODEL_gemma31")
+        ],
+        [
+            Markup.button.callback("🤖 GPT OSS (20B)", "SET_MODEL_gptoss"),
+            Markup.button.callback("🦙 Llama 3.3 (70B)", "SET_MODEL_llama70")
+        ],
+        [
+            Markup.button.callback("💎 Claude 3.5 Sonnet", "SET_MODEL_claude35"),
+            Markup.button.callback("🟢 GPT-4o", "SET_MODEL_gpt4o")
         ]
     ]);
 }
@@ -327,11 +341,14 @@ const bot = new Telegraf(CONFIG.TELEGRAM_TOKEN);
 
 bot.telegram.setMyCommands([
     { command: "start", description: "Tampilkan menu utama & greeting" },
+    { command: "model", description: "Cek & ganti model AI aktif" },
+    { command: "gantimodel", description: "Set model utama (/gantimodel <nama>)" },
+    { command: "tambahmodel", description: "Tambah model fallback (/tambahmodel <nama>)" },
+    { command: "setkey", description: "Set API Key (/setkey <KEY> <VALUE>)" },
     { command: "transcribe", description: "Transkrip Voice/Audio/Video ke PDF (Gemini Pro)" },
     { command: "research", description: "Riset Jurnal & Paper Akademik" },
     { command: "coding", description: "Bantuan Fullstack Koding & Scripting" },
     { command: "devops", description: "Bantuan Server, Docker & Linux" },
-    { command: "chat", description: "Mode General Chat AI" },
     { command: "singkatan", description: "Lihat memori singkatan kustom" },
     { command: "reset", description: "Hapus riwayat percakapan" }
 ]).catch(err => Logger.warn("SetMyCommands error:", err.message));
@@ -344,6 +361,109 @@ bot.start(async (ctx) => {
     );
 });
 
+// MODEL COMMANDS
+bot.command(["model", "models"], async (ctx) => {
+    const primary = ConfigManager.getPrimaryModel();
+    const chain = ConfigManager.getModelChain();
+
+    const chainText = chain.map((m, i) => `  ${i + 1}. \`${m}\``).join("\n");
+
+    const text = `🤖 *Status Model AI CitCat:*\n\n*Model Utama Aktif:* \`${primary}\`\n\n*Model Fallback Chain:*\n${chainText}\n\n*Pilih Model Cepat di Bawah, atau Ketik Command:*\n• \`/gantimodel <nama_model>\`\n• \`/tambahmodel <nama_model>\`\n\n*Kelola API Key:*\n• \`/setkey GEMINI_API_KEY <api_key>\`\n• \`/setkey OPENROUTER_API_KEY <api_key>\``;
+
+    await TelegramPresenter.reply(ctx, text, getModelPresetKeyboard());
+});
+
+bot.command("gantimodel", async (ctx) => {
+    const text = ctx.message.text.trim();
+    const parts = text.split(/\s+/);
+    if (parts.length < 2) {
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/gantimodel <nama_model>`\n\nContoh: `/gantimodel google/gemma-4-31b-it:free`");
+        return;
+    }
+
+    const newModel = parts[1].trim();
+    ConfigManager.setPrimaryModel(newModel);
+    await TelegramPresenter.reply(ctx, `✅ *Model Utama Berhasil Diganti!*\n\nModel aktif sekarang: \`${newModel}\``);
+});
+
+bot.command("tambahmodel", async (ctx) => {
+    const text = ctx.message.text.trim();
+    const parts = text.split(/\s+/);
+    if (parts.length < 2) {
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/tambahmodel <nama_model>`\n\nContoh: `/tambahmodel meta-llama/llama-3.3-70b-instruct:free`");
+        return;
+    }
+
+    const newModel = parts[1].trim();
+    ConfigManager.addModelToChain(newModel);
+    const chain = ConfigManager.getModelChain();
+    await TelegramPresenter.reply(ctx, `✅ *Model Berhasil Ditambahkan ke Fallback Chain!*\n\nDaftar Chain saat ini:\n${chain.map(m => `• \`${m}\``).join("\n")}`);
+});
+
+bot.command("setkey", async (ctx) => {
+    const text = ctx.message.text.trim();
+    const parts = text.split(/\s+/);
+    if (parts.length < 3) {
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/setkey <NAMA_KEY> <VALUE_KEY>`\n\nContoh:\n`/setkey GEMINI_API_KEY AIzaSy...`\n`/setkey OPENROUTER_API_KEY sk-or-v1-...`");
+        return;
+    }
+
+    const keyName = parts[1].trim().toUpperCase();
+    const keyValue = parts[2].trim();
+
+    ConfigManager.setApiKey(keyName, keyValue);
+    await TelegramPresenter.reply(ctx, `🔑 *API Key Berhasil Disimpan!*\n\nKey: \`${keyName}\` (Tersimpan aman di memori server)`);
+});
+
+// CALLBACK BUTTON HANDLERS FOR MODEL SETTINGS
+bot.action("SHOW_MODEL_SETTINGS", async (ctx) => {
+    await ctx.answerCbQuery();
+    const primary = ConfigManager.getPrimaryModel();
+    const chain = ConfigManager.getModelChain();
+
+    const chainText = chain.map((m, i) => `  ${i + 1}. \`${m}\``).join("\n");
+    const text = `🤖 *Status Model AI CitCat:*\n\n*Model Utama Aktif:* \`${primary}\`\n\n*Model Fallback Chain:*\n${chainText}\n\n*Pilih Model Cepat di Bawah:*`;
+
+    await TelegramPresenter.reply(ctx, text, getModelPresetKeyboard());
+});
+
+bot.action("SET_MODEL_gemma26", async (ctx) => {
+    ConfigManager.setPrimaryModel("google/gemma-4-26b-a4b-it:free");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemma-4-26b-a4b-it:free`");
+});
+
+bot.action("SET_MODEL_gemma31", async (ctx) => {
+    ConfigManager.setPrimaryModel("google/gemma-4-31b-it:free");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemma-4-31b-it:free`");
+});
+
+bot.action("SET_MODEL_gptoss", async (ctx) => {
+    ConfigManager.setPrimaryModel("openai/gpt-oss-20b:free");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `openai/gpt-oss-20b:free`");
+});
+
+bot.action("SET_MODEL_llama70", async (ctx) => {
+    ConfigManager.setPrimaryModel("meta-llama/llama-3.3-70b-instruct:free");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `meta-llama/llama-3.3-70b-instruct:free`");
+});
+
+bot.action("SET_MODEL_claude35", async (ctx) => {
+    ConfigManager.setPrimaryModel("anthropic/claude-3.5-sonnet");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `anthropic/claude-3.5-sonnet`");
+});
+
+bot.action("SET_MODEL_gpt4o", async (ctx) => {
+    ConfigManager.setPrimaryModel("openai/gpt-4o");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `openai/gpt-4o`");
+});
+
+// CALLBACK BUTTON HANDLERS FOR AGENT MODES
 bot.action("MODE_TRANSCRIBE", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.setMode(chatId, "TRANSCRIBE");
@@ -372,28 +492,11 @@ bot.action("MODE_DEVOPS", async (ctx) => {
     await TelegramPresenter.reply(ctx, "🛠️ Mode diaktifkan: *DevOps Agent* (Docker, Linux, Nginx, PM2, Tailscale)\n\nSilakan tanyakan seputar konfigurasi server dan perintah terminal!");
 });
 
-bot.action("SHOW_ABBREVIATIONS", async (ctx) => {
-    await ctx.answerCbQuery();
-    const customDict = MemoryManager.getCustomAbbreviations();
-    const keys = Object.keys(customDict);
-
-    if (keys.length === 0) {
-        await ctx.reply("📖 Belum ada singkatan kustom yang dipelajari. Beri tahu saya format: `UNIBA itu Universitas Balikpapan`!", { parse_mode: "Markdown" });
-        return;
-    }
-
-    const listText = keys
-        .map(k => `• *${k.toUpperCase()}*: ${customDict[k]}`)
-        .join("\n");
-
-    await ctx.reply(`📖 *Singkatan Kustom Yang Diingat Bot:*\n\n${listText}`, { parse_mode: "Markdown" });
-});
-
 bot.action("RESET_MEMORY", async (ctx) => {
     const chatId = String(ctx.chat.id);
     MemoryManager.clear(chatId);
     await ctx.answerCbQuery();
-    await ctx.reply("🧹 Riwayat percakapan berhasil dihapus!", { parse_mode: "Markdown" });
+    await TelegramPresenter.reply(ctx, "🧹 Riwayat percakapan berhasil dihapus!");
 });
 
 bot.command("reset", async (ctx) => {
@@ -629,7 +732,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Production System Active (Explicit Search Trigger Priority Active)`);
+Logger.info(`CitCat Dynamic Model & API Key Config Engine Active`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

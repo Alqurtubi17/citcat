@@ -10,6 +10,7 @@ const { ConfigManager } = require("./configManager");
 const { searchWeb } = require("./search");
 const { createPdfBuffer } = require("./pdfService");
 const { createExcelBuffer } = require("./excelService");
+const { parseExcelFileBuffer } = require("./excelReaderService");
 const { transcribeAndSummarizeMedia } = require("./mediaService");
 const { processImageOcr } = require("./ocrService");
 const { askGeminiDirect } = require("./geminiService");
@@ -738,24 +739,15 @@ bot.command("chat", async (ctx) => {
 });
 
 // PHOTO & IMAGE OCR HANDLER (SMART FORMAT EXTRACTOR)
-bot.on(["photo", "document"], async (ctx, next) => {
+bot.on(["photo"], async (ctx, next) => {
     try {
         const message = ctx.message;
         const photos = message.photo;
-        const document = message.document;
 
-        let fileId = null;
-        let mimeType = "image/jpeg";
+        if (!photos || photos.length === 0) return next();
 
-        if (photos && photos.length > 0) {
-            fileId = photos[photos.length - 1].file_id;
-        } else if (document && document.mime_type && document.mime_type.startsWith("image/")) {
-            fileId = document.file_id;
-            mimeType = document.mime_type;
-        }
-
-        if (!fileId) return next();
-
+        const fileId = photos[photos.length - 1].file_id;
+        const mimeType = "image/jpeg";
         const rawCaption = message.caption || "";
         const userCaption = rawCaption.toLowerCase().trim();
 
@@ -806,18 +798,14 @@ bot.on(["photo", "document"], async (ctx, next) => {
 });
 
 // MEDIA HANDLER (Voice Notes, Audio, Video Files)
-bot.on(["voice", "audio", "video", "document"], async (ctx) => {
+bot.on(["voice", "audio", "video"], async (ctx, next) => {
     try {
         const message = ctx.message;
-        const fileObj = message.voice || message.audio || message.video || message.document;
+        const fileObj = message.voice || message.audio || message.video;
 
-        if (!fileObj) return;
+        if (!fileObj) return next();
 
         const mimeType = message.voice ? "audio/ogg" : (fileObj.mime_type || "audio/mp3");
-
-        if (!mimeType.includes("audio") && !mimeType.includes("video") && !mimeType.includes("ogg")) {
-            return;
-        }
 
         await ctx.reply("🎙️ *Menerima file media...* Sedang memproses transkripsi & rangkuman via **Google Gemini Pro** (Mohon tunggu sebentar)...");
         await ctx.sendChatAction("upload_document");
@@ -853,6 +841,68 @@ bot.on(["voice", "audio", "video", "document"], async (ctx) => {
     } catch (err) {
         Logger.error("Media Processing Error:", err.message);
         await TelegramPresenter.reply(ctx, `❌ Gagal memproses media: ${err.message}`);
+    }
+});
+
+// DOCUMENT / EXCEL FILE HANDLER (DEEP MULTI-SHEET DATA ANALYSIS ENGINE)
+bot.on("document", async (ctx, next) => {
+    try {
+        const message = ctx.message;
+        const document = message.document;
+
+        if (!document) return next();
+
+        const filename = document.file_name || "document.xlsx";
+        const mimeType = document.mime_type || "";
+        const lowerName = filename.toLowerCase();
+
+        // Pass images or media documents to next handler
+        if (mimeType.startsWith("image/") || mimeType.startsWith("audio/") || mimeType.startsWith("video/")) {
+            return next();
+        }
+
+        const isExcel = /\.(xlsx|xls|csv)$/i.test(lowerName) || mimeType.includes("spreadsheet") || mimeType.includes("excel") || mimeType.includes("csv");
+
+        await ctx.reply(`📊 *Menerima berkas:* \`${filename}\`\nSedang membaca & menganalisis seluruh isi sheet data via **Google Gemini Pro**...`);
+        await ctx.sendChatAction("typing");
+
+        const fileLink = await ctx.telegram.getFileLink(document.file_id);
+        const response = await axios.get(fileLink.href, { responseType: "arraybuffer" });
+        const fileBuffer = Buffer.from(response.data);
+
+        let extractedTextContext = "";
+
+        if (isExcel) {
+            extractedTextContext = parseExcelFileBuffer(fileBuffer, filename);
+        } else {
+            extractedTextContext = `\n--- BERKAS DOKUMEN: ${filename} ---\n` + fileBuffer.toString("utf-8").substring(0, 20000);
+        }
+
+        const userCaption = message.caption || "Tolong analisa berkas ini secara teliti, cocokkan data antar sheet, dan berikan hasilnya dalam bentuk tabel Markdown yang rapi.";
+
+        const promptPayload = `BERKAS DOKUMEN/EXCEL TERLAMPIR:\n${extractedTextContext}\n\nPERINTAH PENGGUNA:\n${userCaption}`;
+
+        const messages = [
+            {
+                role: "system",
+                content: "Kamu adalah CitCat Document & Excel Data Specialist. Tugasmu adalah menganalisis berkas Excel/dokumen terlampir secara teliti, mencocokkan data antar sheet/baris jika diminta, menemukan perbedaan/data yang belum ada, dan menyajikan hasilnya dalam bentuk tabel Markdown yang rapi, akurat, dan mudah dibaca."
+            },
+            {
+                role: "user",
+                content: promptPayload
+            }
+        ];
+
+        Logger.info(`Analyzing document ${filename} (${fileBuffer.length} bytes) via Gemini Pro...`);
+
+        const rawAnswer = await AiService.askWithFallback(messages, 0.2);
+        const finalAnswer = TextSanitizer.sanitizeOutput(rawAnswer);
+
+        await TelegramPresenter.reply(ctx, finalAnswer || "Berhasil memproses dokumen.");
+
+    } catch (err) {
+        Logger.error("Document Processing Error:", err.message);
+        await TelegramPresenter.reply(ctx, `❌ Gagal memproses berkas dokumen: ${err.message}`);
     }
 });
 

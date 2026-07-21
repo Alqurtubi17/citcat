@@ -971,12 +971,9 @@ bot.on("text", async (ctx) => {
         const recalledMemories = MemoryManager.recallMemories(chatId, userText);
         let utekeMemoryContext = "";
 
-        if (recalledMemories.length > 0) {
-            utekeMemoryContext = recalledMemories
-                .map(m => `• [Uteke Memory]: ${m.text}`)
-                .join("\n");
-            Logger.info(`Uteke Memory Engine recalled ${recalledMemories.length} relevant items for query "${userText}"`);
-        }
+        const chatHistory = MemoryManager.getHistory(chatId);
+        const userMode = MemoryManager.getMode(chatId);
+        const currentDateWib = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "full", timeStyle: "medium" });
 
         const isIdentityQuery = /^(kamu siapa|siapa kamu|siapa anda|anda siapa|siapa dirimu|apa nama bot|siapa pembuatmu|siapa namamu|siapa kamu\?|kamu siapa\?)$/i.test(userText.trim());
 
@@ -1033,7 +1030,7 @@ bot.on("text", async (ctx) => {
             ...chatHistory
         ];
 
-        let finalUserPayload = userText;
+        let finalUserPayload = `[WAKTU REAL-TIME SEKARANG (WIB)]: ${currentDateWib}\n\n${userText}`;
 
         if (utekeMemoryContext) {
             finalUserPayload = `INGATAN JANGKA PANJANG UTEKE (INGATAN PENGGUNA RELEVAN):\n${utekeMemoryContext}\n\n${finalUserPayload}`;

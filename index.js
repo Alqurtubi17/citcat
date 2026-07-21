@@ -66,10 +66,13 @@ class TextSanitizer {
             .replace(/<think>[\s\S]*?<\/think>/gi, "")
             .replace(/<br\s*\/?>/gi, "\n")
             .replace(/<[^>]*>?/gm, "")
-            .replace(/[\u0300-\u036f]/g, "")             // Remove combining diacritical marks (like sớṃ)
-            .replace(/[\u4e00-\u9fa5]+/g, "")             // Remove non-Latin Chinese characters
-            .replace(/\\\[([\s\S]*?)\\]/g, "$1")
-            .replace(/\\\(([\s\S]*?)\\\)/g, "$1")
+            .replace(/[\u0300-\u036f]/g, "")             // Remove combining diacritical marks
+            .replace(/[\u10A0-\u10FF]/g, "")             // Remove Georgian alphabet (e.g. მიღ)
+            .replace(/[\u0400-\u04FF]/g, "")             // Remove Cyrillic alphabet
+            .replace(/[\u4e00-\u9fa5]+/g, "")             // Remove Chinese/Japanese/Korean
+            .replace(/\\\[([\s\S]*?)\\]/g, "$1")       // Remove display LaTeX brackets
+            .replace(/\\\(([\s\S]*?)\\\)/g, "$1")       // Remove inline LaTeX brackets
+            .replace(/\$+/g, "")                         // Strip LaTeX dollar signs
             .trim();
 
         if (cleaned.length > CONFIG.LIMITS.MAX_OUTPUT_LENGTH) {
@@ -234,7 +237,7 @@ class AiService {
         return userText;
     }
 
-    static async askWithFallback(messages, temperature = 0.7, maxTokens = CONFIG.LIMITS.MAX_TOKENS_GEN) {
+    static async askWithFallback(messages, temperature = 0.2, maxTokens = CONFIG.LIMITS.MAX_TOKENS_GEN) {
         let lastError = null;
 
         for (const model of CONFIG.MODEL_CHAIN) {
@@ -450,7 +453,7 @@ bot.on("text", async (ctx) => {
             content: finalUserPayload
         });
 
-        let rawAnswer = await AiService.askWithFallback(messages);
+        let rawAnswer = await AiService.askWithFallback(messages, 0.2);
         let finalAnswer = TextSanitizer.sanitizeOutput(rawAnswer);
 
         if (!finalAnswer && searchContext) {
@@ -460,7 +463,7 @@ bot.on("text", async (ctx) => {
                 ...chatHistory,
                 { role: "user", content: userText }
             ];
-            rawAnswer = await AiService.askWithFallback(fallbackMessages);
+            rawAnswer = await AiService.askWithFallback(fallbackMessages, 0.2);
             finalAnswer = TextSanitizer.sanitizeOutput(rawAnswer);
         }
 
@@ -479,7 +482,7 @@ bot.on("text", async (ctx) => {
 
 bot.launch();
 
-Logger.info(`CitCat Ultra-Fast Multi-Agent System Active (Gemma-4 Priority & Clean Diacritics Active)`);
+Logger.info(`CitCat Ultra-Fast Multi-Agent System Active (Deterministic Temperature 0.2 & Multi-Language Sanitizer Active)`);
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

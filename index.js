@@ -1174,7 +1174,16 @@ bot.on("text", async (ctx) => {
         if (documentContext) {
             finalUserPayload = `DOKUMEN TERLAMPIR:\n${documentContext}\n\nPERTANYAAN USER:\n${finalUserPayload}`;
         } else if (searchContext) {
-            finalUserPayload = `HASIL PENCARIAN WEB REAL-TIME (DILARANG MENGARANG DOI/LINK BUATAN SENDIRI, HANYA GUNAKAN URL ASLI TERTERA):\n${searchContext}\n\nPERTANYAAN USER:\n${finalUserPayload}\n\nPetunjuk Ketat: HANYA tampilkan Judul Jurnal Utuh dan URL ASLI yang tertera di atas. DILARANG MERUBAH ATAU MEMBUAT DOI/LINK MENTAH BUATAN SENDIRI.`;
+            // Auto-upgrade Agent Knowledge Base via Self-Learning Engine
+            const learnedFact = `[Self-Learned Data (${new Date().toLocaleDateString("id-ID")})]: ${userText} -> ${searchContext.substring(0, 250)}`;
+            MemoryManager.storeLongTermMemory(chatId, learnedFact, ["self-learning", "web-fact"]);
+            Logger.info(`[Self-Learning Engine] CitCat upgraded its own knowledge base for query: "${userText}"`);
+
+            if (userMode === "RESEARCH") {
+                finalUserPayload = `HASIL PENCARIAN WEB RISET AKADEMIK:\n${searchContext}\n\nPERTANYAAN USER:\n${userText}\n\nPetunjuk Riset: Tampilkan analisis ringkas ilmiah, judul jurnal utuh, dan URL ASLI yang tertera di atas.`;
+            } else {
+                finalUserPayload = `HASIL PENCARIAN & SCRAPING WEB REAL-TIME:\n${searchContext}\n\nPERTANYAAN USER:\n${userText}\n\nPetunjuk Utama: Bacalah data hasil scraping di atas secara teliti, lalu JELASKAN JAWABAN LENGKAP DENGAN RINCIAN ANGKA, HARGA, ATAU KURS (misalnya rincian harga emas per gram atau nilai kurs USD/IDR). Sertakan URL sumber di akhir jawaban sebagai referensi.`;
+            }
         }
 
         messages.push({

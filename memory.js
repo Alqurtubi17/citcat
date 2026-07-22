@@ -174,6 +174,28 @@ class MemoryManager {
             this.store[chatId].history = this.store[chatId].history.slice(-MAX_HISTORY);
         }
 
+        // UNIVERSAL CONTINUOUS CHAT KNOWLEDGE STORE
+        // Automatically archive every user message into Uteke Long-Term Memory Store for future semantic recall!
+        const cleanText = userText.trim();
+        const isCommand = cleanText.startsWith("/");
+        const isShortGreeting = /^(halo|hai|hi|p|ping|tes|test|start)$/i.test(cleanText);
+
+        if (!isCommand && !isShortGreeting && cleanText.length > 5) {
+            if (!this.store._longTermMemories) this.store._longTermMemories = [];
+
+            // Check if already stored recently to prevent exact duplicate spam
+            const exists = this.store._longTermMemories.some(m => m.chatId === String(chatId) && m.text.toLowerCase() === cleanText.toLowerCase());
+            if (!exists) {
+                this.store._longTermMemories.push({
+                    id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
+                    chatId: String(chatId),
+                    text: cleanText,
+                    tags: ["auto-chat-knowledge"],
+                    timestamp: new Date().toISOString()
+                });
+            }
+        }
+
         // Cache short conversational queries for 0.05s instant answers
         if (userText.length < 50 && assistantText) {
             this.setCachedResponse(userText, assistantText);

@@ -14,6 +14,8 @@ const { parseExcelFileBuffer, computeCrossFileMissingItems } = require("./excelR
 const { transcribeAndSummarizeMedia } = require("./mediaService");
 const { processImageOcr } = require("./ocrService");
 const { askGeminiDirect } = require("./geminiService");
+const { BROWSER_SERVICES, saveBrowserAccount, listBrowserAccounts, removeBrowserAccount, askViaBrowser, closeAllBrowserSessions } = require("./playwrightService");
+
 
 const chatAgent = require("./agents/chat");
 const codingAgent = require("./agents/coding");
@@ -522,8 +524,8 @@ function getMainMenuMarkup() {
             Markup.button.callback("🤖 Atur Model AI", "SHOW_MODEL_SETTINGS")
         ],
         [
-            Markup.button.callback("📋 Cek Log Sistem", "SHOW_LOGS"),
-            Markup.button.callback("🧠 Uteke Memori", "SHOW_UTEKE_MEMORIES")
+            Markup.button.callback("🌐 Browser AI (Playwright)", "SHOW_BROWSER_ACCOUNTS"),
+            Markup.button.callback("📋 Cek Log Sistem", "SHOW_LOGS")
         ],
         [
             Markup.button.callback("🧹 Reset Memori", "RESET_MEMORY")
@@ -787,6 +789,89 @@ bot.command("ocr", async (ctx) => {
     await TelegramPresenter.reply(ctx, "🖼️ Mode diaktifkan: *OCR Vision & Data Specialist (Google Gemini Vision)*\n\nKirimkan foto/scan dokumen, kuitansi, nota, atau tabel. Bot akan mengekstrak teksnya dan mengonversi sesuai permintaan Anda (**Excel .xlsx**, **PDF**, atau **Teks**)!");
 });
 
+// ─── BROWSER AI (PLAYWRIGHT) COMMANDS ─────────────────────────────────────────
+
+// /setbrowser gemini akun1 email@gmail.com password123
+bot.command("setbrowser", async (ctx) => {
+    const parts = ctx.message.text.trim().split(/\s+/);
+    if (parts.length < 5) {
+        await TelegramPresenter.reply(ctx,
+            "⚠️ *Format Salah!*\nGunakan:\n`/setbrowser <layanan> <alias> <email> <password>`\n\n*Layanan tersedia:* `gemini`, `notebooklm`, `chatgpt`\n\nContoh:\n`/setbrowser gemini akun1 emailku@gmail.com passwordku`");
+        return;
+    }
+    const [, serviceId, alias, email, ...passParts] = parts;
+    const password = passParts.join(" ");
+    const key = saveBrowserAccount(serviceId.toLowerCase(), alias, email, password);
+    Logger.info(`Browser account "${key}" ditambahkan.`);
+    await TelegramPresenter.reply(ctx, `✅ *Akun Browser Berhasil Disimpan!*\n\n• Layanan: \`${serviceId}\`\n• Alias: \`${alias}\`\n• Email: \`${email}\`\n\nGunakan dengan: \`/browser ${serviceId} ${alias} <pertanyaan Anda>\``);
+});
+
+// /browser gemini akun1 Apa itu AI?
+bot.command("browser", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const parts = ctx.message.text.trim().split(/\s+/);
+    if (parts.length < 4) {
+        await TelegramPresenter.reply(ctx,
+            "⚠️ *Format Salah!*\nGunakan:\n`/browser <layanan> <alias> <pertanyaan>`\n\nContoh:\n`/browser gemini akun1 Apa itu machine learning?`");
+        return;
+    }
+    const [, serviceId, alias, ...promptParts] = parts;
+    const userPrompt = promptParts.join(" ");
+
+    await TelegramPresenter.reply(ctx, `🌐 *Browser AI Aktif!*\nMenembakkan pertanyaan ke *${serviceId}* (akun: \`${alias}\`)...\n\nHarap tunggu 20-30 detik...`);
+    await ctx.sendChatAction("typing");
+
+    try {
+        const result = await askViaBrowser(serviceId.toLowerCase(), alias, userPrompt, 25000);
+        if (!result) throw new Error("Tidak ada respons yang diterima dari browser.");
+
+        // Simpan ke Uteke Memory sebagai pengetahuan baru
+        const learnedFact = `[Browser AI - ${serviceId}]: Q: ${userPrompt.substring(0, 100)} -> A: ${result.substring(0, 300)}`;
+        MemoryManager.storeLongTermMemory(chatId, learnedFact, ["browser-ai", serviceId]);
+        Logger.info(`[Browser AI] Self-learned from ${serviceId}: "${userPrompt.substring(0, 60)}..."`);
+
+        await TelegramPresenter.reply(ctx, `🌐 *Jawaban dari ${BROWSER_SERVICES[serviceId.toLowerCase()]?.name || serviceId}:*\n\n${result}\n\n_[Hasil telah disimpan ke memori Uteke untuk pembelajaran mandiri]_`);
+    } catch (err) {
+        Logger.error(`Browser AI error (${serviceId}:${alias}):`, err.message);
+        await TelegramPresenter.reply(ctx, `❌ *Browser AI Gagal:* ${err.message}\n\nPastikan akun sudah ditambahkan via \`/setbrowser\` dan kredensialnya valid.`);
+    }
+});
+
+// /delbrowser gemini akun1
+bot.command("delbrowser", async (ctx) => {
+    const parts = ctx.message.text.trim().split(/\s+/);
+    if (parts.length < 3) {
+        await TelegramPresenter.reply(ctx, "⚠️ Format: `/delbrowser <layanan> <alias>`");
+        return;
+    }
+    const [, serviceId, alias] = parts;
+    const key = `${serviceId.toLowerCase()}:${alias}`;
+    const removed = removeBrowserAccount(key);
+    if (removed) {
+        await TelegramPresenter.reply(ctx, `🗑️ Akun \`${key}\` berhasil dihapus dari Browser AI.`);
+    } else {
+        await TelegramPresenter.reply(ctx, `⚠️ Akun \`${key}\` tidak ditemukan.`);
+    }
+});
+
+// /browserlist
+bot.command("browserlist", async (ctx) => {
+    const accounts = listBrowserAccounts();
+    const keys = Object.keys(accounts);
+
+    if (keys.length === 0) {
+        await TelegramPresenter.reply(ctx, "🌐 *Browser AI:* Belum ada akun terdaftar.\n\nTambahkan via: `/setbrowser <layanan> <alias> <email> <password>`");
+        return;
+    }
+
+    const list = keys.map((k, i) => {
+        const a = accounts[k];
+        return `${i + 1}. *[${a.serviceId}]* \`${a.alias}\` — ${a.email}`;
+    }).join("\n");
+
+    await TelegramPresenter.reply(ctx, `🌐 *Browser AI — Daftar Akun Terdaftar:*\n\n${list}`);
+});
+
 // CALLBACK BUTTON HANDLERS
 bot.action("SHOW_LOGS", async (ctx) => {
     const logs = Logger.getRecentLogs(15);
@@ -810,6 +895,32 @@ bot.action("SHOW_UTEKE_MEMORIES", async (ctx) => {
         .join("\n");
 
     await TelegramPresenter.reply(ctx, `🧠 *Daftar Ingatan Jangka Panjang Uteke Engine:*\n\n${memoryList}\n\n*Hapus Ingatan:* `/lupa <id_atau_kata>``);
+});
+
+bot.action("SHOW_BROWSER_ACCOUNTS", async (ctx) => {
+    await ctx.answerCbQuery();
+    const accounts = listBrowserAccounts();
+    const keys = Object.keys(accounts);
+
+    const servicesList = Object.entries(BROWSER_SERVICES)
+        .map(([id, s]) => `• \`${id}\` — ${s.name}`)
+        .join("\n");
+
+    if (keys.length === 0) {
+        await TelegramPresenter.reply(ctx,
+            `🌐 *Browser AI (Playwright Engine)*\n\nBelum ada akun terdaftar.\n\n*Layanan yang Didukung:*\n${servicesList}\n\n*Tambah Akun:*\n\`/setbrowser <layanan> <alias> <email> <password>\`\n\nContoh:\n\`/setbrowser gemini akun1 email@gmail.com passwordku\`\n\`/setbrowser notebooklm kerja email@gmail.com pass123\`\n\`/setbrowser chatgpt utama email@gmail.com pass456\``
+        );
+        return;
+    }
+
+    const accountList = keys.map((k, i) => {
+        const a = accounts[k];
+        return `${i + 1}. *[${a.serviceId}]* \`${a.alias}\` — ${a.email} _(ditambahkan ${new Date(a.addedAt).toLocaleDateString("id-ID")})_`;
+    }).join("\n");
+
+    await TelegramPresenter.reply(ctx,
+        `🌐 *Browser AI — Daftar Akun Terdaftar:*\n\n${accountList}\n\n*Gunakan Akun:* \`/browser <layanan> <alias> <pertanyaan>\`\nContoh: \`/browser gemini akun1 Apa itu blockchain?\`\n\n*Hapus Akun:* \`/delbrowser <layanan> <alias>\`\n*Tambah Akun Baru:* \`/setbrowser <layanan> <alias> <email> <password>\``
+    );
 });
 
 bot.action("MODE_OCR", async (ctx) => {

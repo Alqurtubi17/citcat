@@ -12,8 +12,17 @@ async function transcribeAndSummarizeMedia(buffer, mimeType = "audio/ogg") {
 
     const base64Data = buffer.toString("base64");
 
+    // Retrieve Uteke Memory Context for transcription/media summaries
+    const recalledMemories = ConfigManager.loadConfig() ? require("./memory").MemoryManager.recallMemories("global", "media") : [];
+    let utekeContext = "";
+    if (recalledMemories && recalledMemories.length > 0) {
+        utekeContext = recalledMemories.map(m => `• ${m.text}`).join("\n");
+    }
+
     const promptText = `Kamu adalah AI Transcriber & Summarizer Profesional.
 Tolong olah berkas media (suara/audio/video) terlampir:
+
+${utekeContext ? `INGATAN JANGKA PANJANG PENTING PENGGUNA:\n${utekeContext}\n` : ""}
 
 1. Buatkan TRANSKRIP LENGKAP secara utuh dan akurat dalam Bahasa Indonesia.
 2. Buatkan RANGKUMAN INTI yang terstruktur (poin utama, ide penting, dan kesimpulan).

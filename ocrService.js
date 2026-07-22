@@ -12,8 +12,17 @@ async function processImageOcr(buffer, mimeType = "image/jpeg", userInstruction 
 
     const base64Data = buffer.toString("base64");
 
+    // Retrieve Uteke Memory Context for OCR
+    const recalledMemories = ConfigManager.loadConfig() ? require("./memory").MemoryManager.recallMemories("global", userInstruction) : [];
+    let utekeContext = "";
+    if (recalledMemories && recalledMemories.length > 0) {
+        utekeContext = recalledMemories.map(m => `• ${m.text}`).join("\n");
+    }
+
     const promptText = `Kamu adalah AI Vision OCR & Document Data Extraction Specialist Profesional.
-Tolong baca dan analisis gambar/foto/dokumen terlampir secara presisi tinggi:
+Tolong baca dan analisis gambar/foto/dokumen terlampir secara presisi tinggi.
+
+${utekeContext ? `INGATAN JANGKA PANJANG PENTING PENGGUNA:\n${utekeContext}\n` : ""}
 
 Instruksi Tambahan Pengguna: ${userInstruction || "Ekstrak seluruh teks dan tabel data secara akurat."}
 

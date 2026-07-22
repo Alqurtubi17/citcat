@@ -878,7 +878,20 @@ async function processDocumentBatch(ctx, batch) {
         const userCaption = batch.caption || "Tolong analisa seluruh berkas terlampir secara teliti, cocokkan data antar file & sheet, dan sajikan hasilnya dalam bentuk tabel Markdown yang rapi.";
         const currentDateWib = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "full", timeStyle: "medium" });
 
-        const promptPayload = `[WAKTU REAL-TIME SEKARANG (WIB)]: ${currentDateWib}\n\nBERKAS DOKUMEN/EXCEL TERLAMPIR (${batch.files.length} FILE BERSAMAAN):\n${combinedExtractedContext}\n\nPERINTAH PENGGUNA:\n${userCaption}`;
+        const chatId = String(ctx.chat.id);
+        const recalledMemories = MemoryManager.recallMemories(chatId, userCaption);
+        let utekeMemoryContext = "";
+        if (recalledMemories && recalledMemories.length > 0) {
+            utekeMemoryContext = recalledMemories
+                .map(m => `• [Uteke Memory]: ${m.text}`)
+                .join("\n");
+        }
+
+        let promptPayload = `[WAKTU REAL-TIME SEKARANG (WIB)]: ${currentDateWib}\n\nBERKAS DOKUMEN/EXCEL TERLAMPIR (${batch.files.length} FILE BERSAMAAN):\n${combinedExtractedContext}\n\nPERINTAH PENGGUNA:\n${userCaption}`;
+
+        if (utekeMemoryContext) {
+            promptPayload = `INGATAN JANGKA PANJANG UTEKE (INGATAN PENGGUNA RELEVAN):\n${utekeMemoryContext}\n\n${promptPayload}`;
+        }
 
         const messages = [
             {
@@ -1010,6 +1023,12 @@ bot.on("text", async (ctx) => {
         // 2. UTEKE SEMANTIC RECALL ENGINE
         const recalledMemories = MemoryManager.recallMemories(chatId, userText);
         let utekeMemoryContext = "";
+        if (recalledMemories && recalledMemories.length > 0) {
+            utekeMemoryContext = recalledMemories
+                .map(m => `• [Uteke Memory]: ${m.text}`)
+                .join("\n");
+            Logger.info(`Uteke Memory Engine recalled ${recalledMemories.length} relevant items for query "${userText}"`);
+        }
 
         const chatHistory = MemoryManager.getHistory(chatId);
         const userMode = MemoryManager.getMode(chatId);

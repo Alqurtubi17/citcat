@@ -1075,7 +1075,7 @@ bot.on("text", async (ctx) => {
         const isIdentityQuery = /^(kamu siapa|siapa kamu|siapa anda|anda siapa|siapa dirimu|apa nama bot|siapa pembuatmu|siapa namamu|siapa kamu\?|kamu siapa\?)$/i.test(userText.trim());
 
         if (isIdentityQuery) {
-            const identityReply = "Saya adalah *CitCat Production AI Agent*, asisten cerdas berbasis **Google Gemini 1.5 Pro & Vision**.\n\nSaya memiliki 6 spesialisasi utama:\n• 🖼️ **OCR Vision & Exporter Excel (.xlsx)**\n• 🎙️ **Transkrip Voice/Audio/Video ke PDF**\n• 📚 **Riset & Jurnal Akademik (ARS Copilot)**\n• 💻 **Koding Fullstack Specialist**\n• 🛠️ **DevOps & Server Specialist**\n• 🧠 **Uteke Local-First Memory Engine**\n\nAda yang bisa saya bantu hari ini?";
+            const identityReply = "Saya adalah *CitCat Production AI Agent*, asisten cerdas berbasis **Google Gemini 1.5 Pro & Vision**.\n\nSetiap agent saya (OCR, Transkrip, Riset, Koding, DevOps) telah **terintegrasi langsung dengan Uteke Local-First Memory Engine**, sehingga semua informasi/ingatan penting Anda tersimpan secara otomatis dan diingat oleh seluruh spesialis!\n\n**Spesialisasi Agent:**\n• 🖼️ **OCR Vision & Exporter Excel (.xlsx)**\n• 🎙️ **Transkrip Voice/Audio/Video ke PDF**\n• 📚 **Riset & Jurnal Akademik (ARS Copilot)**\n• 💻 **Koding Fullstack Specialist**\n• 🛠️ **DevOps & Server Specialist**\n\nAda yang bisa saya bantu hari ini?";
             MemoryManager.addMessagePair(chatId, userText, identityReply);
             await TelegramPresenter.reply(ctx, identityReply);
             return;

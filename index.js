@@ -353,6 +353,13 @@ class AiService {
             }
         }
 
+        if (lastError) {
+            const errStr = String(lastError?.response?.data?.error?.message || lastError?.message || "");
+            if (errStr.includes("404") || errStr.includes("API key not valid") || errStr.includes("401") || errStr.includes("status code 404")) {
+                return "⚠️ *Kunci API Key Tidak Valid atau Belum Dikonfigurasi!*\n\nKunci `GEMINI_API_KEY` yang Anda masukkan tidak valid untuk Google AI Studio Endpoint. Kunci Google AI Studio yang valid **selalu diawali dengan \`AIzaSy...\`**.\n\n**Cara Cepat Mendapatkan API Key Resmi:**\n1. Buka situs gratis resmi Google: https://aistudio.google.com/app/apikey\n2. Klik **Create API Key**\n3. Salin kuncinya yang berawalan `AIzaSy...`\n4. Tempel di Telegram ini dengan ketik:\n`/setkey AIzaSy...`\n\n*(Atau gunakan OpenRouter Key dengan: \`/setkey OPENROUTER_API_KEY sk-or-v1-...\`)*";
+            }
+        }
+
         throw lastError || new Error("Semua model (Google Gemini Pro & OpenRouter Chain) gagal merespons.");
     }
 }

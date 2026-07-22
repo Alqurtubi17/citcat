@@ -177,8 +177,9 @@ class DocumentService {
                 return extractedText || "Teks PDF berhasil diunduh namun memerlukan parser PDF khusus.";
             } else {
                 const $ = cheerio.load(response.data);
-                $("script, style, nav, footer, header").remove();
-                return $("body").text().replace(/\s+/g, " ").trim().substring(0, 6000);
+                $("script, style, nav, footer, header, noscript, iframe, svg").remove();
+                const cleanText = $("body").text().replace(/[\t\r]/g, " ").replace(/\n\s*\n/g, "\n").replace(/ {2,}/g, " ").trim();
+                return cleanText.substring(0, 8000);
             }
         } catch (err) {
             Logger.warn(`Gagal membaca isi URL ${url}:`, err.message);
@@ -1132,9 +1133,27 @@ bot.on("text", async (ctx) => {
 
             const searchResults = await searchWeb(contextAwareSearchQuery);
             if (searchResults.length > 0) {
-                searchContext = searchResults
+                let rawSearchText = searchResults
                     .map((r, i) => `[${i + 1}] ${r.title}\nURL: ${r.url}\nRingkasan: ${r.snippet}`)
                     .join("\n\n");
+
+                // AUTOMATED WEBPAGE HTML SCRAPER ENGINE
+                // Scrape top 2 search result URLs to extract exact numeric data, pricing tables, and live figures!
+                let scrapedPagesContext = "";
+                const topUrls = searchResults.slice(0, 2).map(r => r.url);
+
+                for (const targetUrl of topUrls) {
+                    try {
+                        const pageContent = await DocumentService.fetchUrlContent(targetUrl);
+                        if (pageContent && pageContent.length > 50) {
+                            scrapedPagesContext += `\n--- ISI DETAIL HASIL SCRAPING WEBPAGE (${targetUrl}) ---\n${pageContent.substring(0, 5000)}\n`;
+                        }
+                    } catch (err) {
+                        Logger.warn(`Scraping URL ${targetUrl} error:`, err.message);
+                    }
+                }
+
+                searchContext = rawSearchText + (scrapedPagesContext ? `\n\n${scrapedPagesContext}` : "");
             }
         }
 

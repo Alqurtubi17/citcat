@@ -1079,6 +1079,10 @@ const lastExchangeMap = new Map(); // chatId -> { question, answer }
 // MULTI-DOCUMENT BATCH QUEUE COLLECTOR ENGINE
 const documentBatchMap = new Map();
 
+// Simpan hasil diff terakhir per chatId agar user bisa minta ulang file Excel kapan saja
+// mis. "kirim excelnya" / "hasil excelnya" tanpa perlu upload file ulang.
+const lastDiffResultMap = new Map(); // chatId -> diffResult
+
 async function processDocumentBatch(ctx, batch) {
     try {
         await ctx.reply(`🔍 *Sedang menganalisis ${batch.files.length} berkas Excel secara bersamaan via Google Gemini Pro...*`);
@@ -1125,6 +1129,12 @@ async function processDocumentBatch(ctx, batch) {
 
                 const diffResult = computeCrossFileMissingItems(excelFiles, { excludeSheetNames, referenceSheetHints });
 
+                // Persist result for later Excel export via chat ("kirim excelnya")
+                if (diffResult) {
+                    const batchChatId = String(ctx.chat.id);
+                    lastDiffResultMap.set(batchChatId, diffResult);
+                }
+
                 if (diffResult && diffResult.missing.length > 0) {
                     // KIRIM LANGSUNG hasil deterministik sebagai jawaban utama, TANPA
                     // dititipkan ke LLM untuk ditranskrip ulang. LLM (bahkan dengan
@@ -1155,6 +1165,19 @@ async function processDocumentBatch(ctx, batch) {
 
                     Logger.info(`Auto-diff engine: ${diffResult.missing.length} item missing terdeteksi & dikirim langsung (deterministik).`);
                     await TelegramPresenter.reply(ctx, TextSanitizer.sanitizeOutput(tableMd));
+
+                    // Kirim juga file .xlsx hasil diff secara langsung ke Telegram
+                    try {
+                        const xlsxRows = [["No", "Sheet Sumber", "Nama Item"]];
+                        let rowNo = 1;
+                        for (const m of diffResult.missing) {
+                            xlsxRows.push([rowNo++, m.sheet, m.value]);
+                        }
+                        const xlsxBuf = createExcelBuffer(xlsxRows, "Item Belum Ada");
+                        await ctx.replyWithDocument({ source: xlsxBuf, filename: `CitCat_Diff_${Date.now()}.xlsx` }, { caption: `📎 *File Excel hasil perbandingan deterministik (${diffResult.missing.length} item belum terdaftar)*` });
+                    } catch (xlsxErr) {
+                        Logger.warn("Gagal mengirim file xlsx diff:", xlsxErr.message);
+                    }
                     return; // selesai -- tidak perlu panggil LLM lagi untuk kasus ini
                 } else if (diffResult) {
                     autoComputedBlock = `\n\n[HASIL PERHITUNGAN OTOMATIS SISTEM]: Sheet referensi "${diffResult.referenceSheets.join(", ")}" di berkas "${diffResult.referenceFile}" terdeteksi, tapi sistem tidak menemukan item yang hilang secara otomatis. Kalaupun begitu, tetap periksa manual dari teks mentah karena heuristik otomatis bisa saja melewatkan sesuatu.\n`;
@@ -1273,7 +1296,39 @@ bot.on("text", async (ctx) => {
             return;
         }
 
-        // 0. UTEKE INSTANT MEMORY FAST-CACHE CHECK (0.01s Response)
+        // EXCEL EXPORT REQUEST HANDLER
+        // Ketika user meminta file Excel dari hasil analisis terakhir (mis. "kirim excelnya",
+        // "buat excelnya", "hasil excelnya"), buat & kirimkan file .xlsx langsung ke Telegram
+        // menggunakan data dari lastDiffResultMap -- tanpa perlu analisis ulang.
+        const isExcelRequest = /(?:kirim|buat|generate|export|unduh|download|hasilkan|hasil)[\s\w]*excel(?:nya|[ _-]?file)?/i.test(userText) ||
+            /(?:excel|xlsx)[\s\w]*(?:nya|file|aja|dong|please)/i.test(userText) ||
+            /minta[\s\w]*excel/i.test(userText);
+
+        if (isExcelRequest) {
+            const lastDiff = lastDiffResultMap.get(chatId);
+            if (lastDiff && lastDiff.missing && lastDiff.missing.length > 0) {
+                try {
+                    const xlsxRows = [["No", "Sheet Sumber", "Nama Item"]];
+                    let rowNo = 1;
+                    for (const m of lastDiff.missing) {
+                        xlsxRows.push([rowNo++, m.sheet, m.value]);
+                    }
+                    const xlsxBuf = createExcelBuffer(xlsxRows, "Item Belum Ada");
+                    await ctx.replyWithDocument(
+                        { source: xlsxBuf, filename: `CitCat_Diff_${Date.now()}.xlsx` },
+                        { caption: `📎 File Excel hasil perbandingan deterministik (${lastDiff.missing.length} item belum terdaftar di daftar produk)` }
+                    );
+                    Logger.info(`[Excel Export] Sent xlsx of last diff result (${lastDiff.missing.length} items) to chatId ${chatId}`);
+                } catch (xlErr) {
+                    await TelegramPresenter.reply(ctx, `❌ Gagal membuat file Excel: ${xlErr.message}`);
+                }
+            } else {
+                await TelegramPresenter.reply(ctx, "⚠️ Belum ada hasil perbandingan Excel yang tersimpan. Kirimkan terlebih dahulu kedua file Excel Anda, lalu minta hasil perbandingannya.");
+            }
+            return;
+        }
+
+
         // Catatan: sebelumnya cache ini TIDAK PERNAH terisi (bug) karena tidak ada
         // pemanggilan setter di manapun. Sekarang diisi di akhir handler (lihat bawah),
         // dan ditambah local cache sebagai lapis kedua agar tetap berfungsi walau

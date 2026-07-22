@@ -1036,6 +1036,21 @@ bot.on("text", async (ctx) => {
 
         await ctx.sendChatAction("typing");
 
+        // 1. AUTO IMPLICIT MEMORY EXTRACTION ENGINE (Otomatis Ingat Fakta dari Chat Biasa)
+        const memoryFactPatterns = [
+            /(?:nama|email|dosen|pembimbing|vps|ip|server|alamat|nomor|telepon|hp|wa|preferensi|hobi|pekerjaan|proyek|tugas)\s+(?:saya|ku|adalah|itu|yaitu|:)\s+(.+)/i,
+            /(?:saya|ku)\s+(?:adalah|seorang|bekerja|kuliah|menggunakan|pakai|suka|inginkan|butuh)\s+(.+)/i,
+            /(?:ingat|catat|simpan)\s+(?:bahwa|kalau|informasi)?\s+(.+)/i
+        ];
+
+        for (const pattern of memoryFactPatterns) {
+            if (pattern.test(userText) && !/^(siapa|apa|dimana|kapan|mengapa|kenapa|berapa|bagaimana|kamu\s+siapa)/i.test(userText.trim())) {
+                const stored = MemoryManager.storeLongTermMemory(chatId, userText);
+                Logger.info(`[Auto-Memory Extractor] Otomatis mengingat fakta baru (${stored.id}): "${userText}"`);
+                break;
+            }
+        }
+
         // 1. Detect User Teaching/Defining Abbreviation (e.g. "UNIBA itu Universitas Balikpapan")
         const defRegex = /(?:maksudnya\s+)?([a-z0-9]{2,10})\s+(?:itu|adalah|singkatan dari|kepanjangannya|artinya)\s+(.+)/i;
         const defMatch = userText.match(defRegex);

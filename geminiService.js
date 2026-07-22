@@ -8,9 +8,11 @@ const { ConfigManager } = require("./configManager");
  * @param {string} modelName Default: "gemini-flash-latest" (Google-maintained auto-updating
  *   alias, currently resolves to gemini-3.5-flash). NOTE: all Gemini 1.0/1.5 models were
  *   permanently shut down by Google and now return HTTP 404 -- do not hardcode "gemini-1.5-*".
+ * @param {number} maxOutputTokens Default 1500. Dinaikkan oleh pemanggil untuk jawaban
+ *   panjang/terstruktur (mis. tabel perbandingan Excel) supaya tidak terpotong.
  * @returns {Promise<string>}
  */
-async function askGeminiDirect(messages, temperature = 0.2, modelName = "gemini-flash-latest") {
+async function askGeminiDirect(messages, temperature = 0.2, modelName = "gemini-flash-latest", maxOutputTokens = 1500) {
     const apiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
 
     if (!apiKey) {
@@ -51,7 +53,7 @@ async function askGeminiDirect(messages, temperature = 0.2, modelName = "gemini-
 
     payload.generationConfig = {
         temperature: temperature,
-        maxOutputTokens: 1500
+        maxOutputTokens: maxOutputTokens
     };
 
     const response = await axios.post(

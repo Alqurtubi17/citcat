@@ -10,7 +10,7 @@ const { ConfigManager } = require("./configManager");
 const { searchWeb } = require("./search");
 const { createPdfBuffer } = require("./pdfService");
 const { createExcelBuffer } = require("./excelService");
-const { parseExcelFileBuffer } = require("./excelReaderService");
+const { parseExcelFileBuffer, computeCrossFileMissingItems } = require("./excelReaderService");
 const { transcribeAndSummarizeMedia } = require("./mediaService");
 const { processImageOcr } = require("./ocrService");
 const { askGeminiDirect } = require("./geminiService");
@@ -28,9 +28,18 @@ const CONFIG = {
     OPENROUTER_URL: "https://openrouter.ai/api/v1/chat/completions",
     LIMITS: {
         MAX_INPUT_LENGTH: 2000,
-        MAX_OUTPUT_LENGTH: 4000,
+        // Dinaikkan dari 4000 -- nilai lama memotong jawaban panjang (mis. tabel
+        // perbandingan Excel puluhan/ratusan baris) di tengah kalimat. TelegramPresenter
+        // sekarang memecah jawaban panjang jadi beberapa pesan (lihat sendLongMessage),
+        // jadi batas ini hanya jaring pengaman terakhir, bukan batas praktis.
+        MAX_OUTPUT_LENGTH: 12000,
         MAX_SEARCH_RESULTS: 15,
-        MAX_TOKENS_GEN: 1500
+        // Dinaikkan dari 1500 -- nilai lama membuat output terpotong untuk jawaban
+        // terstruktur panjang seperti tabel Markdown berisi puluhan/ratusan baris.
+        MAX_TOKENS_GEN: 4000,
+        // Token budget lebih besar khusus untuk analisis batch dokumen/Excel, karena
+        // hasilnya bisa berupa tabel sangat panjang (ratusan baris perbandingan).
+        MAX_TOKENS_GEN_DOCUMENT: 8000
     },
     TIMEOUTS: {
         ROUTER_MS: 5000,
@@ -360,13 +369,13 @@ class AiService {
                 // (selalu mengembalikan 404). Gunakan alias resmi auto-update dari Google:
                 // "gemini-flash-latest" & "gemini-pro-latest" -- otomatis mengikuti model
                 // stabil terbaru tanpa perlu diganti manual tiap kali Google merilis versi baru.
-                const geminiFlashReply = await askGeminiDirect(messages, temperature, "gemini-flash-latest");
+                const geminiFlashReply = await askGeminiDirect(messages, temperature, "gemini-flash-latest", maxTokens);
                 if (geminiFlashReply) return geminiFlashReply;
             } catch (err) {
                 lastError = err;
                 Logger.warn(`Google Gemini Flash Direct API error (${err.message}). Mencoba Gemini Pro...`);
                 try {
-                    const geminiProReply = await askGeminiDirect(messages, temperature, "gemini-pro-latest");
+                    const geminiProReply = await askGeminiDirect(messages, temperature, "gemini-pro-latest", maxTokens);
                     if (geminiProReply) return geminiProReply;
                 } catch (proErr) {
                     Logger.warn(`Google Gemini Pro Direct API error (${proErr.message}). Melanjutkan ke OpenRouter Model Chain...`);
@@ -451,21 +460,49 @@ class AiService {
 }
 
 class TelegramPresenter {
+    // Telegram membatasi 1 pesan maksimal 4096 karakter. Sebelumnya jawaban panjang
+    // (mis. tabel perbandingan Excel ratusan baris) akan gagal terkirim atau terpotong
+    // brutal oleh TextSanitizer. Sekarang dipecah jadi beberapa pesan berurutan,
+    // dengan pemotongan di baris terdekat (bukan di tengah kata/baris tabel).
+    static TELEGRAM_MAX_CHARS = 3500;
+
+    static splitLongMessage(text, maxChars = this.TELEGRAM_MAX_CHARS) {
+        if (text.length <= maxChars) return [text];
+
+        const chunks = [];
+        let remaining = text;
+
+        while (remaining.length > maxChars) {
+            let cutAt = remaining.lastIndexOf("\n", maxChars);
+            if (cutAt < maxChars * 0.5) cutAt = maxChars; // kalau tidak ada newline yang bagus, potong paksa
+            chunks.push(remaining.substring(0, cutAt));
+            remaining = remaining.substring(cutAt).trimStart();
+        }
+        if (remaining) chunks.push(remaining);
+
+        return chunks;
+    }
+
     static async reply(ctx, text, extra = {}) {
         const formattedText = TextSanitizer.convertTablesToBullets(text);
+        const chunks = this.splitLongMessage(formattedText);
 
-        try {
-            await ctx.reply(formattedText, {
-                parse_mode: "Markdown",
-                disable_web_page_preview: true,
-                ...extra
-            });
-        } catch (err) {
-            Logger.warn("Markdown parse failed, falling back to plain text:", err.message);
-            await ctx.reply(formattedText, {
-                disable_web_page_preview: true,
-                ...extra
-            });
+        for (let i = 0; i < chunks.length; i++) {
+            const partLabel = chunks.length > 1 ? `_(bagian ${i + 1}/${chunks.length})_\n\n` : "";
+            const chunkText = partLabel + chunks[i];
+            try {
+                await ctx.reply(chunkText, {
+                    parse_mode: "Markdown",
+                    disable_web_page_preview: true,
+                    ...extra
+                });
+            } catch (err) {
+                Logger.warn("Markdown parse failed, falling back to plain text:", err.message);
+                await ctx.reply(chunkText, {
+                    disable_web_page_preview: true,
+                    ...extra
+                });
+            }
         }
     }
 }
@@ -1060,6 +1097,73 @@ async function processDocumentBatch(ctx, batch) {
         const userCaption = batch.caption || "Tolong analisa seluruh berkas terlampir secara teliti, cocokkan data antar file & sheet, dan sajikan hasilnya dalam bentuk tabel Markdown yang rapi.";
         const currentDateWib = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "full", timeStyle: "medium" });
 
+        // MESIN DIFF DETERMINISTIK: kalau caption user berpola "cocokkan/bandingkan
+        // ... kecuali sheet X ... dengan sheet Y", hitung selisih data SECARA PASTI
+        // di kode (bukan cuma minta LLM menebak dari teks mentah). Ini menjamin
+        // kelengkapan hasil untuk perbandingan ratusan baris yang tidak reliable
+        // kalau diserahkan sepenuhnya ke LLM. Sepenuhnya defensif -- kalau gagal
+        // mendeteksi struktur apapun, fallback normal ke analisis LLM biasa.
+        let autoComputedBlock = "";
+        try {
+            const excelFiles = batch.files.filter(f => f.isExcel);
+            if (excelFiles.length >= 2) {
+                const captionLower = userCaption.toLowerCase();
+
+                // Deteksi sheet yang harus dikecualikan dari caption, contoh:
+                // "kecuali sheet Notes Bahan Makanan dan Master Menu"
+                const excludeSheetNames = [];
+                const excludeMatch = userCaption.match(/kecuali sheet ([^.]+?)(?:,? dengan|\.|$)/i);
+                if (excludeMatch) {
+                    excludeMatch[1].split(/,| dan /i).map(s => s.trim()).filter(Boolean).forEach(s => excludeSheetNames.push(s));
+                }
+
+                // Deteksi nama sheet referensi, contoh: "dengan sheet di Excel Daftar
+                // Produk Bahan SPPG (sheet Produk)" -> ambil "Produk"
+                const referenceSheetHints = [];
+                const refMatch = userCaption.match(/sheet\s+([a-z0-9 _-]+?)\)/i) || userCaption.match(/\(sheet\s+([a-z0-9 _-]+)\)/i);
+                if (refMatch) referenceSheetHints.push(refMatch[1].trim());
+
+                const diffResult = computeCrossFileMissingItems(excelFiles, { excludeSheetNames, referenceSheetHints });
+
+                if (diffResult && diffResult.missing.length > 0) {
+                    // KIRIM LANGSUNG hasil deterministik sebagai jawaban utama, TANPA
+                    // dititipkan ke LLM untuk ditranskrip ulang. LLM (bahkan dengan
+                    // instruksi eksplisit) tetap berisiko meringkas/melewatkan sebagian
+                    // baris kalau daftarnya panjang -- ini menjamin 100% lengkap karena
+                    // langsung dari hasil perhitungan kode, bukan hasil LLM menyalin ulang.
+                    const grouped = new Map(); // sheet -> [values]
+                    for (const m of diffResult.missing) {
+                        if (!grouped.has(m.sheet)) grouped.set(m.sheet, []);
+                        grouped.get(m.sheet).push(m.value);
+                    }
+
+                    let tableMd = `📋 *Hasil Perbandingan Otomatis (Deterministik)*\n\n` +
+                        `Dibandingkan terhadap sheet referensi *"${diffResult.referenceSheets.join(", ")}"* di berkas \`${diffResult.referenceFile}\`.\n` +
+                        `Ditemukan *${diffResult.missing.length} item* yang ada di data sumber tapi belum terdaftar:\n\n`;
+
+                    let counter = 1;
+                    for (const [sheet, values] of grouped.entries()) {
+                        tableMd += `\n*${sheet}* (${values.length} item):\n`;
+                        tableMd += `| No | Nama Item |\n|---|---|\n`;
+                        for (const v of values) {
+                            tableMd += `| ${counter} | ${v} |\n`;
+                            counter++;
+                        }
+                    }
+
+                    tableMd += `\n_Dihitung otomatis & pasti oleh sistem (bukan estimasi AI) -- membandingkan setiap sel data terhadap sheet referensi, bukan sampling._`;
+
+                    Logger.info(`Auto-diff engine: ${diffResult.missing.length} item missing terdeteksi & dikirim langsung (deterministik).`);
+                    await TelegramPresenter.reply(ctx, TextSanitizer.sanitizeOutput(tableMd));
+                    return; // selesai -- tidak perlu panggil LLM lagi untuk kasus ini
+                } else if (diffResult) {
+                    autoComputedBlock = `\n\n[HASIL PERHITUNGAN OTOMATIS SISTEM]: Sheet referensi "${diffResult.referenceSheets.join(", ")}" di berkas "${diffResult.referenceFile}" terdeteksi, tapi sistem tidak menemukan item yang hilang secara otomatis. Kalaupun begitu, tetap periksa manual dari teks mentah karena heuristik otomatis bisa saja melewatkan sesuatu.\n`;
+                }
+            }
+        } catch (autoErr) {
+            Logger.warn("Auto-diff engine gagal, fallback ke analisis LLM biasa:", autoErr.message);
+        }
+
         const chatId = String(ctx.chat.id);
         const recalledMemories = MemoryManager.recallMemories(chatId, userCaption);
         let utekeMemoryContext = "";
@@ -1069,7 +1173,7 @@ async function processDocumentBatch(ctx, batch) {
                 .join("\n");
         }
 
-        let promptPayload = `[WAKTU REAL-TIME SEKARANG (WIB)]: ${currentDateWib}\n\nBERKAS DOKUMEN/EXCEL TERLAMPIR (${batch.files.length} FILE BERSAMAAN):\n${combinedExtractedContext}\n\nPERINTAH PENGGUNA:\n${userCaption}`;
+        let promptPayload = `[WAKTU REAL-TIME SEKARANG (WIB)]: ${currentDateWib}\n\nBERKAS DOKUMEN/EXCEL TERLAMPIR (${batch.files.length} FILE BERSAMAAN):\n${combinedExtractedContext}${autoComputedBlock}\n\nPERINTAH PENGGUNA:\n${userCaption}`;
 
         if (utekeMemoryContext) {
             promptPayload = `INGATAN JANGKA PANJANG UTEKE (INGATAN PENGGUNA RELEVAN):\n${utekeMemoryContext}\n\n${promptPayload}`;
@@ -1078,7 +1182,7 @@ async function processDocumentBatch(ctx, batch) {
         const messages = [
             {
                 role: "system",
-                content: "Kamu adalah CitCat Multi-Document & Excel Data Specialist. Tugasmu adalah menganalisis dan membandingkan SELURUH berkas Excel/dokumen yang terlampir secara teliti, mencocokkan data antar file dan sheet (seperti membandingkan bahan di file Siklus Menu dengan file Master Produk), menemukan data yang belum ada/berbeda, dan menyajikan hasilnya dalam bentuk tabel Markdown yang rapi, teliti, dan lengkap."
+                content: "Kamu adalah CitCat Multi-Document & Excel Data Specialist. Tugasmu adalah menganalisis dan membandingkan SELURUH berkas Excel/dokumen yang terlampir secara teliti, mencocokkan data antar file dan sheet (seperti membandingkan bahan di file Siklus Menu dengan file Master Produk), menemukan data yang belum ada/berbeda, dan menyajikan hasilnya dalam bentuk tabel Markdown yang rapi, teliti, dan lengkap. ATURAN WAJIB: proses dan sajikan SETIAP baris/item yang relevan satu per satu tanpa terkecuali -- JANGAN meringkas, JANGAN menyampel sebagian saja, JANGAN berhenti di tengah walau daftarnya panjang (puluhan/ratusan item). Kalau ada [HASIL PERHITUNGAN OTOMATIS SISTEM] di prompt, itu adalah data yang SUDAH dihitung pasti oleh kode -- WAJIB pakai semuanya sebagai dasar jawaban, jangan menghilangkan satupun."
             },
             {
                 role: "user",
@@ -1087,7 +1191,7 @@ async function processDocumentBatch(ctx, batch) {
         ];
 
         Logger.info(`Analyzing document batch (${batch.files.length} files) via Gemini Pro...`);
-        const rawAnswer = await AiService.askWithFallback(messages, 0.2);
+        const rawAnswer = await AiService.askWithFallback(messages, 0.2, CONFIG.LIMITS.MAX_TOKENS_GEN_DOCUMENT);
         const finalAnswer = TextSanitizer.sanitizeOutput(rawAnswer);
 
         await TelegramPresenter.reply(ctx, finalAnswer || "Berhasil menganalisis seluruh berkas.");

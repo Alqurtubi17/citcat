@@ -1,7 +1,9 @@
 const axios = require("axios");
 const { ConfigManager } = require("./configManager");
 
-const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-pro:generateContent";
+// Alias resmi Google yang auto-update, bukan versi hardcoded. "gemini-1.5-pro" sudah
+// dimatikan permanen oleh Google (semua request akan 404) sejak awal 2026.
+const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-latest:generateContent";
 
 async function transcribeAndSummarizeMedia(buffer, mimeType = "audio/ogg") {
     const apiKey = ConfigManager.getApiKey("GEMINI_API_KEY");

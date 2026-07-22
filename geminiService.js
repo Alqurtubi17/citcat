@@ -5,10 +5,12 @@ const { ConfigManager } = require("./configManager");
  * Direct call to Google Gemini Official API using user's official GEMINI_API_KEY
  * @param {Array<{role: string, content: string}>} messages
  * @param {number} temperature
- * @param {string} modelName Default: "gemini-1.5-flash" (Ultra fast 1-2s response)
+ * @param {string} modelName Default: "gemini-flash-latest" (Google-maintained auto-updating
+ *   alias, currently resolves to gemini-3.5-flash). NOTE: all Gemini 1.0/1.5 models were
+ *   permanently shut down by Google and now return HTTP 404 -- do not hardcode "gemini-1.5-*".
  * @returns {Promise<string>}
  */
-async function askGeminiDirect(messages, temperature = 0.2, modelName = "gemini-1.5-flash") {
+async function askGeminiDirect(messages, temperature = 0.2, modelName = "gemini-flash-latest") {
     const apiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
 
     if (!apiKey) {

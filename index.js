@@ -189,31 +189,104 @@ class DocumentService {
 }
 
 class AiService {
+    // Scoring-based agent classifier (menggantikan first-match cascade lama).
+    // Setiap agent punya beberapa pola; skor tertinggi yang menang, sehingga
+    // kalimat yang mengandung kata kunci dari >1 agent tetap terklasifikasi
+    // dengan lebih akurat (mis. "convert hasil scan ke excel pakai OCR" -> OCR,
+    // tapi "cara export data ke excel pakai javascript" -> Coding).
+    static AGENT_RULES = [
+        {
+            agent: ocrAgent,
+            patterns: [/\b(ocr)\b/i, /\b(scan|kuitansi|nota|invoice)\b/i, /\b(foto|gambar)\b/i]
+        },
+        {
+            agent: transcribeAgent,
+            patterns: [/\b(transkrip|rekaman|voice note)\b/i, /\b(audio|video|voice|speech)\b/i, /\byoutube\b/i]
+        },
+        {
+            agent: devopsAgent,
+            patterns: [/\b(docker|nginx|pm2|tailscale)\b/i, /\b(ubuntu|linux|ssh|devops|bash|cron|sudo)\b/i, /\bserver\b/i]
+        },
+        {
+            agent: codingAgent,
+            patterns: [/\b(code|coding|bug|error|script)\b/i, /\b(react|nextjs|javascript|typescript|express|node)\b/i, /\b(api|function|html|css|excel|xlsx)\b/i]
+        },
+        {
+            agent: researchAgent,
+            patterns: [/\b(jurnal|paper|penelitian|research)\b/i, /\b(arxiv|ieee|sinta|doi|springer|acm)\b/i]
+        }
+    ];
+
     static selectAgent(text) {
         if (!text) return chatAgent;
         const lower = text.toLowerCase();
 
-        if (/\b(ocr|foto|gambar|scan|kuitansi|nota|invoice|excel|xlsx)\b/i.test(lower)) {
-            return ocrAgent;
+        let bestAgent = chatAgent;
+        let bestScore = 0;
+
+        for (const rule of this.AGENT_RULES) {
+            let score = 0;
+            for (const pattern of rule.patterns) {
+                if (pattern.test(lower)) score++;
+            }
+            if (score > bestScore) {
+                bestScore = score;
+                bestAgent = rule.agent;
+            }
         }
 
-        if (/\b(transkrip|rekaman|suara|audio|video|voice|speech|youtube)\b/i.test(lower)) {
-            return transcribeAgent;
-        }
+        return bestAgent;
+    }
 
-        if (/\b(code|coding|react|nextjs|javascript|typescript|express|api|node|html|css|function|bug|err|script)\b/i.test(lower)) {
-            return codingAgent;
-        }
+    // In-process response cache untuk pertanyaan yang identik/mirip.
+    // Ini adalah "self-contained fallback" -- jika MemoryManager sudah punya
+    // getCachedResponse/setCachedResponse sendiri, itu tetap dipakai lebih dulu;
+    // cache lokal ini hanya jaring pengaman kedua supaya fitur cache TIDAK PERNAH
+    // kosong seperti sebelumnya (bug: getCachedResponse dipanggil tapi tak pernah diisi).
+    static _localCache = new Map(); // key -> { answer, expiresAt }
+    static LOCAL_CACHE_TTL_MS = 6 * 60 * 60 * 1000; // 6 jam
+    static LOCAL_CACHE_MAX_ENTRIES = 500;
 
-        if (/\b(docker|ubuntu|linux|nginx|pm2|tailscale|server|ssh|devops|bash|cron|sudo)\b/i.test(lower)) {
-            return devopsAgent;
-        }
+    static _cacheKey(text) {
+        return text.trim().toLowerCase().replace(/\s+/g, " ");
+    }
 
-        if (/\b(jurnal|paper|penelitian|research|arxiv|ieee|sinta|pdf|doi|springer|acm)\b/i.test(lower)) {
-            return researchAgent;
+    static getLocalCachedResponse(text) {
+        const key = this._cacheKey(text);
+        const entry = this._localCache.get(key);
+        if (!entry) return null;
+        if (Date.now() > entry.expiresAt) {
+            this._localCache.delete(key);
+            return null;
         }
+        return entry.answer;
+    }
 
-        return chatAgent;
+    static setLocalCachedResponse(text, answer) {
+        const key = this._cacheKey(text);
+        if (this._localCache.size >= this.LOCAL_CACHE_MAX_ENTRIES) {
+            const oldestKey = this._localCache.keys().next().value;
+            this._localCache.delete(oldestKey);
+        }
+        this._localCache.set(key, { answer, expiresAt: Date.now() + this.LOCAL_CACHE_TTL_MS });
+    }
+
+    // Model cooldown map: model yang baru gagal/timeout di-skip sementara supaya
+    // request berikutnya tidak menunggu timeout yang sama berulang-ulang (lebih cepat).
+    static _modelCooldown = new Map(); // model -> timestamp kapan boleh dicoba lagi
+    static MODEL_COOLDOWN_MS = 5 * 60 * 1000; // 5 menit
+
+    static isModelOnCooldown(model) {
+        const until = this._modelCooldown.get(model);
+        return !!until && Date.now() < until;
+    }
+
+    static markModelFailed(model) {
+        this._modelCooldown.set(model, Date.now() + this.MODEL_COOLDOWN_MS);
+    }
+
+    static markModelSuccess(model) {
+        this._modelCooldown.delete(model);
     }
 
     static checkSearchNeed(text) {
@@ -282,14 +355,18 @@ class AiService {
         const geminiApiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
         if (geminiApiKey) {
             try {
-                Logger.info("Memanggil Google Gemini 1.5 Flash Direct API (Ultra-Fast Engine)...");
-                const geminiFlashReply = await askGeminiDirect(messages, temperature, "gemini-1.5-flash");
+                Logger.info("Memanggil Google Gemini Flash Direct API (gemini-flash-latest, Ultra-Fast Engine)...");
+                // CATATAN: model "gemini-1.5-flash/pro" sudah dimatikan permanen oleh Google
+                // (selalu mengembalikan 404). Gunakan alias resmi auto-update dari Google:
+                // "gemini-flash-latest" & "gemini-pro-latest" -- otomatis mengikuti model
+                // stabil terbaru tanpa perlu diganti manual tiap kali Google merilis versi baru.
+                const geminiFlashReply = await askGeminiDirect(messages, temperature, "gemini-flash-latest");
                 if (geminiFlashReply) return geminiFlashReply;
             } catch (err) {
                 lastError = err;
                 Logger.warn(`Google Gemini Flash Direct API error (${err.message}). Mencoba Gemini Pro...`);
                 try {
-                    const geminiProReply = await askGeminiDirect(messages, temperature, "gemini-1.5-pro");
+                    const geminiProReply = await askGeminiDirect(messages, temperature, "gemini-pro-latest");
                     if (geminiProReply) return geminiProReply;
                 } catch (proErr) {
                     Logger.warn(`Google Gemini Pro Direct API error (${proErr.message}). Melanjutkan ke OpenRouter Model Chain...`);
@@ -319,7 +396,13 @@ class AiService {
 
         const openrouterKey = ConfigManager.getApiKey("OPENROUTER_API_KEY") || CONFIG.OPENROUTER_API_KEY;
 
-        for (const model of modelChain) {
+        // Pisahkan model yang sedang "cooldown" (baru gagal <5 menit lalu) supaya
+        // tidak menunggu timeout yang sama berulang -> respons jauh lebih cepat.
+        const readyModels = modelChain.filter(m => !this.isModelOnCooldown(m));
+        const cooldownModels = modelChain.filter(m => this.isModelOnCooldown(m));
+        const orderedChain = [...readyModels, ...cooldownModels]; // fallback tetap coba yang cooldown jika semua ready gagal
+
+        for (const model of orderedChain) {
             try {
                 const payload = {
                     model,
@@ -345,10 +428,12 @@ class AiService {
                 const content = response.data?.choices?.[0]?.message?.content;
                 if (content !== undefined && content !== null) {
                     Logger.info(`Model ${model} sukses merespons.`);
+                    this.markModelSuccess(model);
                     return content;
                 }
             } catch (err) {
                 lastError = err;
+                this.markModelFailed(model);
                 const errDetail = err.response?.data?.error?.message || err.message;
                 Logger.warn(`Model ${model} timeout/failed (${errDetail}). Mencoba model berikutnya...`);
             }
@@ -412,7 +497,7 @@ function getMainMenuMarkup() {
 function getModelPresetKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("✨ Gemini 1.5 Pro (Direct)", "SET_MODEL_gemini_pro"),
+            Markup.button.callback("✨ Gemini 2.5 Flash (OpenRouter)", "SET_MODEL_gemini_pro"),
             Markup.button.callback("🦙 Llama 3.3 (70B)", "SET_MODEL_llama70")
         ],
         [
@@ -462,6 +547,8 @@ bot.telegram.setMyCommands([
     { command: "coding", description: "Bantuan Fullstack Koding & Scripting" },
     { command: "devops", description: "Bantuan Server, Docker & Linux" },
     { command: "singkatan", description: "Lihat memori singkatan kustom" },
+    { command: "benar", description: "Konfirmasi jawaban terakhir sudah benar" },
+    { command: "salah", description: "Koreksi jawaban terakhir (/salah <jawaban benar>)" },
     { command: "reset", description: "Hapus riwayat percakapan" }
 ]).catch(err => Logger.warn("SetMyCommands error:", err.message));
 
@@ -538,6 +625,56 @@ bot.command("lupa", async (ctx) => {
     }
 });
 
+// SELF-LEARNING FEEDBACK COMMANDS
+bot.command("benar", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const last = lastExchangeMap.get(chatId);
+
+    if (!last) {
+        await TelegramPresenter.reply(ctx, "⚠️ Belum ada jawaban terakhir yang bisa dikonfirmasi di sesi ini.");
+        return;
+    }
+
+    MemoryManager.storeLongTermMemory(
+        chatId,
+        `[Terverifikasi Benar oleh User] Q: "${last.question}" -> A: "${last.answer.substring(0, 400)}"`,
+        ["verified", "feedback-positive"]
+    );
+    Logger.info(`[Feedback Engine] Jawaban dikonfirmasi BENAR oleh user (${chatId}): "${last.question}"`);
+    await TelegramPresenter.reply(ctx, "✅ *Terima kasih atas konfirmasinya!* Saya akan mengingat bahwa jawaban tadi sudah benar.");
+});
+
+bot.command("salah", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const text = ctx.message.text.trim();
+    const parts = text.split(/\s+/);
+    const correction = parts.slice(1).join(" ").trim();
+    const last = lastExchangeMap.get(chatId);
+
+    if (!correction) {
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/salah <jawaban_yang_benar>`\n\nContoh:\n`/salah Ketua RT nya adalah Pak Budi, bukan Pak Andi`");
+        return;
+    }
+
+    const questionRef = last ? last.question : "(pertanyaan sebelumnya tidak diketahui)";
+
+    // Disimpan dengan tag prioritas tinggi supaya idealnya diprioritaskan
+    // oleh recallMemories() di atas fakta hasil self-learning biasa.
+    MemoryManager.storeLongTermMemory(
+        chatId,
+        `[KOREKSI PRIORITAS TINGGI] Untuk pertanyaan "${questionRef}", jawaban yang BENAR adalah: ${correction}`,
+        ["correction", "high-priority"]
+    );
+
+    // Buang entri cache lama untuk pertanyaan ini supaya jawaban salah tidak terulang dari cache.
+    if (last?.question) {
+        AiService._localCache.delete(AiService._cacheKey(last.question));
+    }
+
+    Logger.info(`[Feedback Engine] Koreksi disimpan untuk chat ${chatId}: "${correction}"`);
+    await TelegramPresenter.reply(ctx, `📝 *Koreksi Tersimpan!*\nSaya akan menggunakan informasi ini untuk pertanyaan serupa ke depannya:\n\n"${correction}"`);
+});
+
 // MODEL COMMANDS
 bot.command(["model", "models"], async (ctx) => {
     const primary = ConfigManager.getPrimaryModel();
@@ -553,7 +690,7 @@ bot.command("gantimodel", async (ctx) => {
     const text = ctx.message.text.trim();
     const parts = text.split(/\s+/);
     if (parts.length < 2) {
-        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/gantimodel <nama_model>`\n\nContoh: `/gantimodel google/gemini-1.5-pro`");
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/gantimodel <nama_model>`\n\nContoh: `/gantimodel google/gemini-2.5-flash`");
         return;
     }
 
@@ -657,10 +794,12 @@ bot.action("SHOW_MODEL_SETTINGS", async (ctx) => {
 });
 
 bot.action("SET_MODEL_gemini_pro", async (ctx) => {
-    ConfigManager.setPrimaryModel("google/gemini-1.5-pro");
-    Logger.info("Model diganti ke: google/gemini-1.5-pro");
+    // "google/gemini-1.5-pro" sudah dimatikan Google (404 permanen). Gunakan
+    // "google/gemini-2.5-flash" yang masih aktif & stabil di OpenRouter per Juli 2026.
+    ConfigManager.setPrimaryModel("google/gemini-2.5-flash");
+    Logger.info("Model diganti ke: google/gemini-2.5-flash");
     await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemini-1.5-pro` (Direct Official Google Gemini Pro Engine)");
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemini-2.5-flash` (via OpenRouter)");
 });
 
 bot.action("SET_MODEL_llama70", async (ctx) => {
@@ -895,6 +1034,10 @@ bot.on(["voice", "audio", "video"], async (ctx, next) => {
     }
 });
 
+// SELF-LEARNING FEEDBACK ENGINE: menyimpan pertukaran (pertanyaan, jawaban) terakhir
+// per chat, supaya user bisa mengoreksi via /benar atau /salah <koreksi>.
+const lastExchangeMap = new Map(); // chatId -> { question, answer }
+
 // DOCUMENT / EXCEL FILE HANDLER (DEEP MULTI-SHEET DATA ANALYSIS ENGINE)
 // MULTI-DOCUMENT BATCH QUEUE COLLECTOR ENGINE
 const documentBatchMap = new Map();
@@ -1027,7 +1170,14 @@ bot.on("text", async (ctx) => {
         }
 
         // 0. UTEKE INSTANT MEMORY FAST-CACHE CHECK (0.01s Response)
-        const cachedAnswer = MemoryManager.getCachedResponse(userText);
+        // Catatan: sebelumnya cache ini TIDAK PERNAH terisi (bug) karena tidak ada
+        // pemanggilan setter di manapun. Sekarang diisi di akhir handler (lihat bawah),
+        // dan ditambah local cache sebagai lapis kedua agar tetap berfungsi walau
+        // MemoryManager belum mengimplementasikan cache-nya sendiri.
+        const cachedAnswer = (typeof MemoryManager.getCachedResponse === "function"
+            ? MemoryManager.getCachedResponse(userText)
+            : null) || AiService.getLocalCachedResponse(userText);
+
         if (cachedAnswer) {
             Logger.info(`[Instant Fast-Cache Hit] Answered "${userText}" in 0.01s from Memory!`);
             MemoryManager.addMessagePair(chatId, userText, cachedAnswer);
@@ -1084,6 +1234,28 @@ bot.on("text", async (ctx) => {
             Logger.info(`Uteke Memory Engine recalled ${recalledMemories.length} relevant items for query "${userText}"`);
         }
 
+        // 2b. SELF-LEARNING FEEDBACK ENGINE: prioritaskan koreksi user (/salah) secara eksplisit,
+        // supaya kesalahan yang sudah dikoreksi TIDAK terulang, walau recallMemories bawaan
+        // tidak memberi bobot lebih pada tag "high-priority".
+        try {
+            if (typeof MemoryManager.getLongTermMemories === "function") {
+                const allMemories = MemoryManager.getLongTermMemories(chatId) || [];
+                const highPriorityCorrections = allMemories.filter(m =>
+                    Array.isArray(m.tags) && m.tags.includes("high-priority") &&
+                    m.text && m.text.length < 500
+                );
+                if (highPriorityCorrections.length > 0) {
+                    const correctionsText = highPriorityCorrections
+                        .slice(-5) // ambil 5 koreksi paling baru saja agar prompt tidak membengkak
+                        .map(m => `• ${m.text}`)
+                        .join("\n");
+                    utekeMemoryContext = `[KOREKSI USER SEBELUMNYA - WAJIB DIPATUHI]:\n${correctionsText}\n\n${utekeMemoryContext}`;
+                }
+            }
+        } catch (err) {
+            Logger.warn("Gagal memuat koreksi prioritas tinggi:", err.message);
+        }
+
         const chatHistory = MemoryManager.getHistory(chatId);
         const userMode = MemoryManager.getMode(chatId);
         const currentDateWib = new Date().toLocaleString("id-ID", { timeZone: "Asia/Jakarta", dateStyle: "full", timeStyle: "medium" });
@@ -1091,7 +1263,7 @@ bot.on("text", async (ctx) => {
         const isIdentityQuery = /^(kamu siapa|siapa kamu|siapa anda|anda siapa|siapa dirimu|apa nama bot|siapa pembuatmu|siapa namamu|siapa kamu\?|kamu siapa\?)$/i.test(userText.trim());
 
         if (isIdentityQuery) {
-            const identityReply = "Saya adalah *CitCat Production AI Agent*, asisten cerdas berbasis **Google Gemini 1.5 Pro & Vision**.\n\nSetiap agent saya (OCR, Transkrip, Riset, Koding, DevOps) telah **terintegrasi langsung dengan Uteke Local-First Memory Engine**, sehingga semua informasi/ingatan penting Anda tersimpan secara otomatis dan diingat oleh seluruh spesialis!\n\n**Spesialisasi Agent:**\n• 🖼️ **OCR Vision & Exporter Excel (.xlsx)**\n• 🎙️ **Transkrip Voice/Audio/Video ke PDF**\n• 📚 **Riset & Jurnal Akademik (ARS Copilot)**\n• 💻 **Koding Fullstack Specialist**\n• 🛠️ **DevOps & Server Specialist**\n\nAda yang bisa saya bantu hari ini?";
+            const identityReply = "Saya adalah *CitCat Production AI Agent*, asisten cerdas berbasis **Google Gemini & Vision**.\n\nSetiap agent saya (OCR, Transkrip, Riset, Koding, DevOps) telah **terintegrasi langsung dengan Uteke Local-First Memory Engine**, sehingga semua informasi/ingatan penting Anda tersimpan secara otomatis dan diingat oleh seluruh spesialis!\n\n**Spesialisasi Agent:**\n• 🖼️ **OCR Vision & Exporter Excel (.xlsx)**\n• 🎙️ **Transkrip Voice/Audio/Video ke PDF**\n• 📚 **Riset & Jurnal Akademik (ARS Copilot)**\n• 💻 **Koding Fullstack Specialist**\n• 🛠️ **DevOps & Server Specialist**\n\nAda yang bisa saya bantu hari ini?";
             MemoryManager.addMessagePair(chatId, userText, identityReply);
             await TelegramPresenter.reply(ctx, identityReply);
             return;
@@ -1116,12 +1288,16 @@ bot.on("text", async (ctx) => {
         const extractedUrls = DocumentService.extractUrls(userText);
         let documentContext = "";
         if (extractedUrls.length > 0) {
-            for (const url of extractedUrls.slice(0, 2)) {
-                const content = await DocumentService.fetchUrlContent(url);
-                if (content) {
-                    documentContext += `\nISI DOKUMEN/URL (${url}):\n${content}\n`;
+            const urlsToFetch = extractedUrls.slice(0, 2);
+            // Fetch semua URL secara paralel (sebelumnya sequential -> 2x lebih lambat)
+            const fetchedResults = await Promise.allSettled(
+                urlsToFetch.map(url => DocumentService.fetchUrlContent(url))
+            );
+            fetchedResults.forEach((result, idx) => {
+                if (result.status === "fulfilled" && result.value) {
+                    documentContext += `\nISI DOKUMEN/URL (${urlsToFetch[idx]}):\n${result.value}\n`;
                 }
-            }
+            });
         }
 
         const needsSearch = !isCasualChat && AiService.checkSearchNeed(userText); // Instant local classification (0 ms)
@@ -1142,16 +1318,19 @@ bot.on("text", async (ctx) => {
                 let scrapedPagesContext = "";
                 const topUrls = searchResults.slice(0, 2).map(r => r.url);
 
-                for (const targetUrl of topUrls) {
-                    try {
-                        const pageContent = await DocumentService.fetchUrlContent(targetUrl);
-                        if (pageContent && pageContent.length > 50) {
-                            scrapedPagesContext += `\n--- ISI DETAIL HASIL SCRAPING WEBPAGE (${targetUrl}) ---\n${pageContent.substring(0, 5000)}\n`;
-                        }
-                    } catch (err) {
-                        Logger.warn(`Scraping URL ${targetUrl} error:`, err.message);
+                // Scraping dua halaman teratas dilakukan paralel (Promise.allSettled),
+                // bukan satu-satu berurutan -> mempercepat waktu jawab secara signifikan.
+                const scrapeResults = await Promise.allSettled(
+                    topUrls.map(targetUrl => DocumentService.fetchUrlContent(targetUrl))
+                );
+                scrapeResults.forEach((result, idx) => {
+                    const targetUrl = topUrls[idx];
+                    if (result.status === "fulfilled" && result.value && result.value.length > 50) {
+                        scrapedPagesContext += `\n--- ISI DETAIL HASIL SCRAPING WEBPAGE (${targetUrl}) ---\n${result.value.substring(0, 5000)}\n`;
+                    } else if (result.status === "rejected") {
+                        Logger.warn(`Scraping URL ${targetUrl} error:`, result.reason?.message || result.reason);
                     }
-                }
+                });
 
                 searchContext = rawSearchText + (scrapedPagesContext ? `\n\n${scrapedPagesContext}` : "");
             }
@@ -1210,6 +1389,23 @@ bot.on("text", async (ctx) => {
         }
 
         MemoryManager.addMessagePair(chatId, userText, finalAnswer);
+        lastExchangeMap.set(chatId, { question: userText, answer: finalAnswer });
+
+        // FIX: isi cache supaya fast-cache di awal handler benar-benar berguna.
+        // Tidak di-cache jika hasilnya bergantung pada pencarian web/dokumen real-time
+        // (harga, berita, kurs, dsb) karena jawabannya bisa basi/berubah.
+        const isCacheable = finalAnswer &&
+            !needsSearch &&
+            !documentContext &&
+            finalAnswer.length < 3000;
+
+        if (isCacheable) {
+            if (typeof MemoryManager.setCachedResponse === "function") {
+                MemoryManager.setCachedResponse(userText, finalAnswer);
+            }
+            AiService.setLocalCachedResponse(userText, finalAnswer);
+        }
+
         await TelegramPresenter.reply(ctx, finalAnswer);
 
     } catch (err) {

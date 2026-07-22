@@ -18,9 +18,21 @@ const defaultConfig = {
 };
 
 class ConfigManager {
+    // In-memory cache: config.json dibaca berulang kali per pesan (getPrimaryModel,
+    // getModelChain, getApiKey x2+) sebelumnya selalu fs.readFileSync SETIAP panggilan.
+    // Sekarang di-cache dan hanya dibaca ulang dari disk kalau file berubah (mtime beda)
+    // atau belum pernah dibaca -- jauh lebih cepat, terutama untuk request yang sering.
+    static _cache = null;
+    static _cacheMtimeMs = 0;
+
     static loadConfig() {
         try {
             if (fs.existsSync(CONFIG_PATH)) {
+                const stat = fs.statSync(CONFIG_PATH);
+                if (this._cache && stat.mtimeMs === this._cacheMtimeMs) {
+                    return this._cache; // cache masih valid, hindari baca disk lagi
+                }
+
                 const data = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
 
                 let modified = false;
@@ -47,17 +59,23 @@ class ConfigManager {
                     } catch (err) { }
                 }
 
+                this._cache = data;
+                this._cacheMtimeMs = fs.existsSync(CONFIG_PATH) ? fs.statSync(CONFIG_PATH).mtimeMs : Date.now();
                 return data;
             }
         } catch (err) {
             console.error("[ConfigManager] Gagal membaca config.json:", err.message);
         }
-        return { ...defaultConfig };
+        this._cache = { ...defaultConfig };
+        return this._cache;
     }
 
     static saveConfig(config) {
         try {
             fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2), "utf8");
+            // Invalidate cache lokal supaya panggilan berikutnya konsisten dengan yang baru disimpan.
+            this._cache = config;
+            this._cacheMtimeMs = fs.existsSync(CONFIG_PATH) ? fs.statSync(CONFIG_PATH).mtimeMs : Date.now();
         } catch (err) {
             console.error("[ConfigManager] Gagal menyimpan config.json:", err.message);
         }

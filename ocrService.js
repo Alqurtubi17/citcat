@@ -1,7 +1,9 @@
 const axios = require("axios");
 const { ConfigManager } = require("./configManager");
 
-const GEMINI_VISION_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
+// Alias resmi Google yang auto-update, bukan versi hardcoded. "gemini-1.5-flash" sudah
+// dimatikan permanen oleh Google (semua request akan 404) sejak awal 2026.
+const GEMINI_VISION_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
 
 async function processImageOcr(buffer, mimeType = "image/jpeg", userInstruction = "") {
     const apiKey = ConfigManager.getApiKey("GEMINI_API_KEY");

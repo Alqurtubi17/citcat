@@ -4,6 +4,15 @@ const path = require("path");
 const MEMORY_FILE = path.join(__dirname, "memory.json");
 const MAX_HISTORY = 20;
 
+// Batas jumlah long-term memory PER CHAT. Tanpa batas ini, addMessagePair() yang
+// otomatis menyimpan hampir tiap pesan sebagai "auto-chat-knowledge" akan membuat
+// memory.json tumbuh tak terbatas -- memperlambat recallMemories() (linear scan)
+// dan menenggelamkan memori penting (koreksi user, fakta terverifikasi) di antara
+// ribuan chat biasa. Saat limit tercapai, entri "auto-chat-knowledge" TERLAMA
+// dibuang lebih dulu; tag penting (correction/verified/high-priority/manual) tidak disentuh.
+const MAX_LONG_TERM_MEMORIES_PER_CHAT = 300;
+const PRUNABLE_TAG = "auto-chat-knowledge";
+
 function loadMemory() {
     try {
         if (fs.existsSync(MEMORY_FILE)) {
@@ -65,6 +74,29 @@ class MemoryManager {
 
     // --- UTEKE LONG-TERM MEMORY ENGINE ---
 
+    /**
+     * Buang entri "auto-chat-knowledge" TERLAMA per chat jika sudah melebihi
+     * MAX_LONG_TERM_MEMORIES_PER_CHAT. Memori penting (correction/verified/manual)
+     * tidak pernah dibuang otomatis.
+     */
+    pruneLongTermMemories(chatId) {
+        if (!this.store._longTermMemories) return;
+
+        const chatIdStr = String(chatId);
+        const chatMemories = this.store._longTermMemories.filter(m => m.chatId === chatIdStr);
+        if (chatMemories.length <= MAX_LONG_TERM_MEMORIES_PER_CHAT) return;
+
+        const excess = chatMemories.length - MAX_LONG_TERM_MEMORIES_PER_CHAT;
+        const prunable = chatMemories
+            .filter(m => Array.isArray(m.tags) && m.tags.includes(PRUNABLE_TAG))
+            .sort((a, b) => new Date(a.timestamp) - new Date(b.timestamp)); // terlama dulu
+
+        const idsToRemove = new Set(prunable.slice(0, excess).map(m => m.id));
+        if (idsToRemove.size > 0) {
+            this.store._longTermMemories = this.store._longTermMemories.filter(m => !idsToRemove.has(m.id));
+        }
+    }
+
     storeLongTermMemory(chatId, text, tags = ["general"]) {
         if (!this.store._longTermMemories) {
             this.store._longTermMemories = [];
@@ -79,6 +111,7 @@ class MemoryManager {
         };
 
         this.store._longTermMemories.push(newMemory);
+        this.pruneLongTermMemories(chatId);
         saveMemory(this.store);
         return newMemory;
     }
@@ -127,6 +160,15 @@ class MemoryManager {
 
             if (mem.tags.some(tag => queryTokens.includes(tag.toLowerCase()))) {
                 score += 3;
+            }
+
+            // Boost: koreksi user (/salah) dan konfirmasi (/benar) diprioritaskan
+            // di atas fakta auto-chat biasa, supaya kesalahan yang sudah dikoreksi
+            // tidak gampang tenggelam / terulang.
+            if (mem.tags.includes("high-priority") || mem.tags.includes("correction")) {
+                score += 5;
+            } else if (mem.tags.includes("verified")) {
+                score += 2;
             }
 
             return { ...mem, score };
@@ -193,6 +235,7 @@ class MemoryManager {
                     tags: ["auto-chat-knowledge"],
                     timestamp: new Date().toISOString()
                 });
+                this.pruneLongTermMemories(chatId);
             }
         }
 

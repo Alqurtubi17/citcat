@@ -573,17 +573,30 @@ bot.command("tambahmodel", async (ctx) => {
 bot.command("setkey", async (ctx) => {
     const text = ctx.message.text.trim();
     const parts = text.split(/\s+/);
-    if (parts.length < 3) {
-        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/setkey <NAMA_KEY> <VALUE_KEY>`\n\nContoh:\n`/setkey GEMINI_API_KEY AIzaSy...`\n`/setkey OPENROUTER_API_KEY sk-or-v1-...`");
+
+    let keyName = "";
+    let keyValue = "";
+
+    if (parts.length >= 3) {
+        keyName = parts[1].trim().toUpperCase();
+        keyValue = parts.slice(2).join(" ").trim();
+    } else if (parts.length === 2) {
+        keyValue = parts[1].trim();
+        if (keyValue.startsWith("sk-or-")) {
+            keyName = "OPENROUTER_API_KEY";
+        } else {
+            keyName = "GEMINI_API_KEY";
+        }
+    } else {
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/setkey <NAMA_KEY> <VALUE_KEY>` atau cukup `/setkey <VALUE_KEY>`\n\nContoh:\n`/setkey GEMINI_API_KEY AIzaSy...`\n`/setkey AQ.Ab8RN6...`");
         return;
     }
 
-    const keyName = parts[1].trim().toUpperCase();
-    const keyValue = parts[2].trim();
+    keyValue = keyValue.replace(/^["']|["']$/g, "").trim();
 
     ConfigManager.setApiKey(keyName, keyValue);
     Logger.info(`API Key ${keyName} berhasil diperbarui.`);
-    await TelegramPresenter.reply(ctx, `🔑 *API Key Berhasil Disimpan!*\n\nKey: \`${keyName}\` (Tersimpan aman di memori server)`);
+    await TelegramPresenter.reply(ctx, `🔑 *API Key Berhasil Disimpan!*\n\n• Key: \`${keyName}\`\n• Status: Tersimpan aman di server VM Anda`);
 });
 
 bot.command("ocr", async (ctx) => {

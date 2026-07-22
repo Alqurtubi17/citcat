@@ -4,10 +4,10 @@ const path = require("path");
 const CONFIG_PATH = path.join(__dirname, "config.json");
 
 const defaultConfig = {
-    primaryModel: process.env.MODEL || "google/gemini-1.5-pro",
+    primaryModel: process.env.MODEL || "google/gemini-pro-1.5",
     modelChain: [
-        process.env.MODEL || "google/gemini-1.5-pro",
-        "google/gemini-1.5-flash",
+        process.env.MODEL || "google/gemini-pro-1.5",
+        "google/gemini-flash-1.5",
         "meta-llama/llama-3.3-70b-instruct:free",
         "qwen/qwen-2.5-coder-32b-instruct:free"
     ],

@@ -1024,14 +1024,18 @@ bot.on("text", async (ctx) => {
             return;
         }
 
+        const isCasualChat = /^(kenapa begitu\??|kok begitu\??|mengapa begitu\??|oke|ok|sip|terima kasih|thanks|thank you|makasih|halo|hai|hi|p|ping|tes|test)$/i.test(userText.trim());
+
         let activeAgent = chatAgent;
-        if (userMode === "CODING") activeAgent = codingAgent;
-        else if (userMode === "RESEARCH") activeAgent = researchAgent;
-        else if (userMode === "DEVOPS") activeAgent = devopsAgent;
-        else if (userMode === "TRANSCRIBE") activeAgent = transcribeAgent;
-        else if (userMode === "OCR") activeAgent = ocrAgent;
-        else {
-            activeAgent = AiService.selectAgent(userText); // Instant local selection (0 ms)
+        if (!isCasualChat) {
+            if (userMode === "CODING") activeAgent = codingAgent;
+            else if (userMode === "RESEARCH") activeAgent = researchAgent;
+            else if (userMode === "DEVOPS") activeAgent = devopsAgent;
+            else if (userMode === "TRANSCRIBE") activeAgent = transcribeAgent;
+            else if (userMode === "OCR") activeAgent = ocrAgent;
+            else {
+                activeAgent = AiService.selectAgent(userText); // Instant local selection (0 ms)
+            }
         }
 
         Logger.info(`User (${chatId}) -> Active Agent: ${activeAgent.name} | Question: "${userText}"`);
@@ -1047,7 +1051,7 @@ bot.on("text", async (ctx) => {
             }
         }
 
-        const needsSearch = AiService.checkSearchNeed(userText); // Instant local classification (0 ms)
+        const needsSearch = !isCasualChat && AiService.checkSearchNeed(userText); // Instant local classification (0 ms)
         let searchContext = "";
 
         if (needsSearch && !documentContext) {

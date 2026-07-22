@@ -4,12 +4,12 @@ const path = require("path");
 const CONFIG_PATH = path.join(__dirname, "config.json");
 
 const defaultConfig = {
-    primaryModel: process.env.MODEL || "google/gemini-pro-1.5",
+    primaryModel: process.env.MODEL || "meta-llama/llama-3.3-70b-instruct:free",
     modelChain: [
-        process.env.MODEL || "google/gemini-pro-1.5",
-        "google/gemini-flash-1.5",
-        "meta-llama/llama-3.3-70b-instruct:free",
-        "qwen/qwen-2.5-coder-32b-instruct:free"
+        process.env.MODEL || "meta-llama/llama-3.3-70b-instruct:free",
+        "google/gemma-2-9b-it:free",
+        "qwen/qwen-2.5-coder-32b-instruct:free",
+        "deepseek/deepseek-r1-distill-llama-70b:free"
     ],
     apiKeys: {
         OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || "",
@@ -22,6 +22,31 @@ class ConfigManager {
         try {
             if (fs.existsSync(CONFIG_PATH)) {
                 const data = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
+
+                let modified = false;
+                if (data.primaryModel === "google/gemini-1.5-pro" || data.primaryModel === "google/gemini-1.5-flash" || data.primaryModel === "google/gemini-pro-1.5") {
+                    data.primaryModel = "meta-llama/llama-3.3-70b-instruct:free";
+                    modified = true;
+                }
+
+                if (Array.isArray(data.modelChain)) {
+                    const newChain = data.modelChain.map(m => {
+                        if (m === "google/gemini-1.5-pro" || m === "google/gemini-pro-1.5") return "meta-llama/llama-3.3-70b-instruct:free";
+                        if (m === "google/gemini-1.5-flash" || m === "google/gemini-flash-1.5") return "google/gemma-2-9b-it:free";
+                        return m;
+                    });
+                    if (JSON.stringify(newChain) !== JSON.stringify(data.modelChain)) {
+                        data.modelChain = newChain;
+                        modified = true;
+                    }
+                }
+
+                if (modified) {
+                    try {
+                        fs.writeFileSync(CONFIG_PATH, JSON.stringify(data, null, 2), "utf8");
+                    } catch (err) { }
+                }
+
                 return data;
             }
         } catch (err) {

@@ -297,7 +297,25 @@ class AiService {
         }
 
         // 2. OpenRouter Model Chain Fallback
-        const modelChain = ConfigManager.getModelChain();
+        let modelChain = ConfigManager.getModelChain();
+
+        // Ensure invalid legacy model names inside modelChain are sanitized to valid active OpenRouter models
+        modelChain = modelChain.map(m => {
+            if (m === "google/gemini-1.5-pro" || m === "google/gemini-pro-1.5") return "meta-llama/llama-3.3-70b-instruct:free";
+            if (m === "google/gemini-1.5-flash" || m === "google/gemini-flash-1.5") return "google/gemma-2-9b-it:free";
+            return m;
+        });
+
+        // Add guaranteed free active models if not already in chain
+        const defaultFreeModels = [
+            "meta-llama/llama-3.3-70b-instruct:free",
+            "google/gemma-2-9b-it:free",
+            "qwen/qwen-2.5-coder-32b-instruct:free"
+        ];
+        for (const freeModel of defaultFreeModels) {
+            if (!modelChain.includes(freeModel)) modelChain.push(freeModel);
+        }
+
         const openrouterKey = ConfigManager.getApiKey("OPENROUTER_API_KEY") || CONFIG.OPENROUTER_API_KEY;
 
         for (const model of modelChain) {

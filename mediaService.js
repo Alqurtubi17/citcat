@@ -137,18 +137,21 @@ async function extractAndDownloadMediaFromUrl(url) {
             throw new Error("Tidak menemukan elemen media video/audio pada halaman web ini. Tautan mungkin diproteksi kata sandi atau membutuhkan login.");
         }
 
-        // Fetch direct media stream buffer
-        const response = await axios.get(videoSrc, {
-            responseType: "arraybuffer",
-            timeout: 180000,
+        // Fetch direct media stream buffer using Playwright context.request to retain Zoom cookies & session tokens
+        const response = await context.request.get(videoSrc, {
             headers: {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
-                "Referer": url
-            }
+                "Referer": page.url(),
+                "Range": "bytes=0-15000000"
+            },
+            timeout: 120000
         });
 
-        const buffer = Buffer.from(response.data);
-        const contentTypeHeader = response.headers["content-type"] || "video/mp4";
+        if (!response.ok() && response.status() !== 206) {
+            throw new Error(`Server media mengembalikan HTTP status ${response.status()}`);
+        }
+
+        const buffer = await response.body();
+        const contentTypeHeader = response.headers()["content-type"] || "video/mp4";
         const mimeType = contentTypeHeader.split(";")[0].trim();
 
         return {

@@ -38,30 +38,55 @@ Wajib gunakan pemisah tag ini secara tepat:
 (Tulis rangkuman inti terstruktur di sini)
 ---RANGKUMAN_AKHIR---`;
 
-    const response = await axios.post(
-        `${GEMINI_URL}?key=${apiKey}`,
-        {
-            contents: [
-                {
-                    parts: [
-                        {
-                            inline_data: {
-                                mime_type: mimeType,
-                                data: base64Data
-                            }
-                        },
-                        { text: promptText }
-                    ]
-                }
-            ]
-        },
-        {
-            headers: { "Content-Type": "application/json" },
-            timeout: 180000
-        }
-    );
+    // Model candidates: gemini-flash-latest has 15 RPM (vs 2 RPM for gemini-pro-latest)
+    const models = ["gemini-flash-latest", "gemini-pro-latest"];
+    let lastError = null;
+    let replyText = "";
 
-    const replyText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    for (const model of models) {
+        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+        try {
+            const response = await axios.post(
+                url,
+                {
+                    contents: [
+                        {
+                            parts: [
+                                {
+                                    inline_data: {
+                                        mime_type: mimeType,
+                                        data: base64Data
+                                    }
+                                },
+                                { text: promptText }
+                            ]
+                        }
+                    ]
+                },
+                {
+                    headers: { "Content-Type": "application/json" },
+                    timeout: 180000
+                }
+            );
+
+            replyText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+            if (replyText) break;
+        } catch (err) {
+            lastError = err;
+            const isRateLimit = err.response?.status === 429;
+            if (isRateLimit) {
+                console.warn(`[Media Transcribe] Model ${model} hit rate limit (429). Retrying with next model in 2 seconds...`);
+                await new Promise(res => setTimeout(res, 2000));
+            }
+        }
+    }
+
+    if (!replyText) {
+        if (lastError?.response?.status === 429) {
+            throw new Error("Batas kuota gratis Google AI Studio (HTTP 429 Rate Limit) terlampaui. Harap tunggu 1-2 menit sebelum mencoba lagi, atau tambahkan API Key baru via `/setkey GEMINI_API_KEY <key_baru>`.");
+        }
+        throw lastError || new Error("Gagal mendapatkan respons transkripsi dari model Gemini.");
+    }
 
     const transcriptMatch = replyText.match(/---TRANSKRIP_AWAL---([\s\S]*?)---TRANSKRIP_AKHIR---/i);
     const summaryMatch = replyText.match(/---RANGKUMAN_AWAL---([\s\S]*?)---RANGKUMAN_AKHIR---/i);

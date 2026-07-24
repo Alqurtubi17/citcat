@@ -11,7 +11,7 @@ const { searchWeb } = require("./search");
 const { createPdfBuffer } = require("./pdfService");
 const { createExcelBuffer } = require("./excelService");
 const { parseExcelFileBuffer, computeCrossFileMissingItems } = require("./excelReaderService");
-const { transcribeAndSummarizeMedia } = require("./mediaService");
+const { transcribeAndSummarizeMedia, extractAndDownloadMediaFromUrl } = require("./mediaService");
 const { processImageOcr } = require("./ocrService");
 const { askGeminiDirect } = require("./geminiService");
 const { BROWSER_SERVICES, saveBrowserAccount, listBrowserAccounts, removeBrowserAccount, askViaBrowser, closeAllBrowserSessions } = require("./playwrightService");
@@ -1494,19 +1494,18 @@ bot.on("text", async (ctx) => {
             }
         }
 
-        // 2. UTEKE SEMANTIC RECALL ENGINE
+        // 2. UTEKE SEMANTIC RECALL ENGINE (HIGH-PRECISION KNOWLEDGE RECALL)
         const recalledMemories = MemoryManager.recallMemories(chatId, userText);
         let utekeMemoryContext = "";
         if (recalledMemories && recalledMemories.length > 0) {
-            utekeMemoryContext = recalledMemories
-                .map(m => `• [Uteke Memory]: ${m.text}`)
+            const formattedMemories = recalledMemories
+                .map(m => `• ${m.text}`)
                 .join("\n");
+            utekeMemoryContext = `[MEMORI JANGKA PANJANG (FAKTA TERVERIFIKASI & RELEVAN)]:\n${formattedMemories}`;
             Logger.info(`Uteke Memory Engine recalled ${recalledMemories.length} relevant items for query "${userText}"`);
         }
 
-        // 2b. SELF-LEARNING FEEDBACK ENGINE: prioritaskan koreksi user (/salah) secara eksplisit,
-        // supaya kesalahan yang sudah dikoreksi TIDAK terulang, walau recallMemories bawaan
-        // tidak memberi bobot lebih pada tag "high-priority".
+        // 2b. SELF-LEARNING FEEDBACK ENGINE: prioritaskan koreksi user (/salah) secara eksplisit
         try {
             if (typeof MemoryManager.getLongTermMemories === "function") {
                 const allMemories = MemoryManager.getLongTermMemories(chatId) || [];
@@ -1516,10 +1515,10 @@ bot.on("text", async (ctx) => {
                 );
                 if (highPriorityCorrections.length > 0) {
                     const correctionsText = highPriorityCorrections
-                        .slice(-5) // ambil 5 koreksi paling baru saja agar prompt tidak membengkak
+                        .slice(-5)
                         .map(m => `• ${m.text}`)
                         .join("\n");
-                    utekeMemoryContext = `[KOREKSI USER SEBELUMNYA - WAJIB DIPATUHI]:\n${correctionsText}\n\n${utekeMemoryContext}`;
+                    utekeMemoryContext = `[KOREKSI USER SEBELUMNYA - WAJIB DIPATUHI MUTLAK]:\n${correctionsText}\n\n${utekeMemoryContext}`.trim();
                 }
             }
         } catch (err) {
@@ -1556,6 +1555,50 @@ bot.on("text", async (ctx) => {
         Logger.info(`User (${chatId}) -> Active Agent: ${activeAgent.name} | Question: "${userText}"`);
 
         const extractedUrls = DocumentService.extractUrls(userText);
+
+        // AUTOMATED ZOOM & WEB MEDIA RECORDING TRANSCRIBER ENGINE
+        // Detects Zoom recording links (zoom.us/rec) or video/audio links in Transcribe mode
+        if (extractedUrls.length > 0) {
+            const zoomOrMediaUrl = extractedUrls.find(u => /zoom\.us\/rec/i.test(u) || /\.(mp4|mp3|m4a|wav|ogg|webm)/i.test(u)) || (userMode === "TRANSCRIBE" ? extractedUrls[0] : null);
+
+            if (zoomOrMediaUrl && (userMode === "TRANSCRIBE" || /transkrip|rangkum|zoom/i.test(userText))) {
+                try {
+                    await TelegramPresenter.reply(ctx, `🎥 *Mendeteksi tautan rekaman Zoom/Media:*\n\`${zoomOrMediaUrl}\`\n\nSedang mengekstrak & mengunduh aliran video/audio via **Playwright Engine**... (Mohon tunggu sebentar)`);
+                    await ctx.sendChatAction("upload_document");
+
+                    const { buffer, mimeType } = await extractAndDownloadMediaFromUrl(zoomOrMediaUrl);
+                    Logger.info(`[Zoom/Web Transcriber] Downloaded ${buffer.length} bytes (${mimeType}) from ${zoomOrMediaUrl}`);
+
+                    await ctx.reply("🎙️ Media berhasil diekstrak! Memproses transkripsi & rangkuman via **Google Gemini Pro**...");
+
+                    const { fullTranscript, coreSummary } = await transcribeAndSummarizeMedia(buffer, mimeType);
+
+                    await ctx.reply("📄 *Transkripsi & Rangkuman Selesai!* Menggenerasi dokumen PDF...");
+
+                    const transcriptPdfBuffer = await createPdfBuffer("TRANSKRIP LENGKAP MEDIA (Zoom / Web Video)", fullTranscript);
+                    const summaryPdfBuffer = await createPdfBuffer("RANGKUMAN INTI PENELITIAN & REKAMAN MEDIA", coreSummary);
+
+                    const shortSummaryPreview = TextSanitizer.sanitizeOutput(coreSummary).substring(0, 800);
+                    await TelegramPresenter.reply(ctx, `📌 *RANGKUMAN INTI REKAMAN ZOOM/MEDIA:* \n\n${shortSummaryPreview}\n\n*(Dokumen PDF lengkap dilampirkan di bawah)*`);
+
+                    await ctx.replyWithDocument({
+                        source: summaryPdfBuffer,
+                        filename: "Rangkuman_Inti_Zoom.pdf"
+                    });
+
+                    await ctx.replyWithDocument({
+                        source: transcriptPdfBuffer,
+                        filename: "Transkrip_Lengkap_Zoom.pdf"
+                    });
+                    Logger.info("Berhasil meng-generate PDF Transkrip & Rangkuman dari tautan Zoom/Web Media.");
+                    return; // Finished processing Zoom/Media URL
+                } catch (mediaUrlErr) {
+                    Logger.warn(`Gagal ekstraksi otomatis tautan Zoom/Media (${zoomOrMediaUrl}):`, mediaUrlErr.message);
+                    await TelegramPresenter.reply(ctx, `⚠️ *Pemberitahuan Ekstraksi Zoom:* ${mediaUrlErr.message}\n\nMelanjutkan dengan analisis teks halaman web biasa...`);
+                }
+            }
+        }
+
         let documentContext = "";
         if (extractedUrls.length > 0) {
             const urlsToFetch = extractedUrls.slice(0, 2);

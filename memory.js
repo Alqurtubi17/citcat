@@ -35,6 +35,29 @@ function saveMemory(memoryData) {
     }
 }
 
+// Stop-words set for filtering noise in semantic recall
+const INDONESIAN_STOPWORDS = new Set([
+    "ada", "adalah", "adanya", "adapun", "agaknya", "agar", "akan", "akankah", "akhirnya", "aku", "akulah",
+    "amat", "anda", "andalah", "antar", "antara", "antaranya", "apa", "apaan", "apabila", "apakah", "apalagi",
+    "artinya", "atau", "ataukah", "ataupun", "bagaimana", "bagaimanakah", "bagaimanapun", "bagi", "bahkan",
+    "bahwa", "bahwasanya", "bisa", "bisakah", "boleh", "bolehkah", "buat", "bukan", "bukankah", "bukanlah",
+    "carikan", "carinya", "cuma", "dan", "dapat", "dari", "daripada", "dengan", "dia", "dialah", "diantara",
+    "diantaranya", "dikarenakan", "dimana", "dimanakah", "diri", "dirinya", "disitu", "disitulah", "disini",
+    "disinilah", "ditambah", "dong", "dulu", "enggak", "gak", "hal", "hanya", "harus", "haruslah", "ia", "ialah",
+    "ini", "inikah", "inilah", "itu", "itukah", "itulah", "jadi", "jangan", "jika", "jikalau", "juga", "kalau",
+    "kami", "kamu", "kamulah", "kapan", "kapankah", "karena", "kata", "ke", "kecuali", "kenapa", "kepada",
+    "kepadanya", "kita", "kitalah", "lagi", "lagipula", "lain", "lu", "gue", "maka", "makanya", "malah",
+    "malahan", "mampu", "mana", "manakah", "masih", "masihkah", "mau", "maupun", "melainkan", "memang",
+    "mengapa", "mengapakah", "mereka", "merekalah", "meskipun", "mungkin", "nah", "namun", "oleh", "olehnya",
+    "pada", "padahal", "padanya", "pasti", "pengen", "pernah", "pula", "pun", "rasa", "saat", "saja", "sajalah",
+    "saling", "sama", "sampai", "sangat", "saya", "sayalah", "sebab", "sebagai", "sebagian", "sebagaimana",
+    "sebagainya", "sebelum", "sebelumnya", "sedang", "sedangkan", "sedikit", "sehingga", "sejak", "sekali",
+    "sekalian", "sekilas", "selain", "selama", "seluruh", "semakin", "sementara", "seperti", "sepertinya",
+    "sering", "serta", "siapa", "siapakah", "sudah", "sudahkah", "supaya", "tadi", "tanpa", "tapi", "tentu",
+    "tentang", "tentunya", "terhadap", "termasuk", "ternyata", "tidak", "tidakkah", "toh", "untuk", "utk",
+    "ya", "yaitu", "yakin", "yang", "what", "who", "where", "when", "why", "how", "the", "a", "an", "is", "are"
+]);
+
 /**
  * Uteke-Inspired Local-First Memory Engine for AI Agents
  */
@@ -139,63 +162,98 @@ class MemoryManager {
     }
 
     /**
-     * Uteke Semantic Recall Engine:
-     * Scores stored memories based on keyword relevance and injects top recalled items.
+     * High-Precision Semantic Recall Engine:
+     * Filters noise stop-words, calculates weighted exact-phrase & token scores,
+     * and prioritizes verified facts, corrections, and explicit memories.
      */
     recallMemories(chatId, queryText, limit = 5) {
         const memories = this.getLongTermMemories(chatId);
         if (memories.length === 0) return [];
 
-        const queryTokens = queryText.toLowerCase().split(/\s+/).filter(t => t.length > 2);
+        const cleanQuery = queryText.toLowerCase().trim();
+        const rawTokens = cleanQuery.replace(/[?!.,;:()'"]/g, " ").split(/\s+/).filter(Boolean);
+        
+        // Filter stop-words to isolate high-value keywords (e.g. "rektor", "uniba", "budi")
+        let meaningfulTokens = rawTokens.filter(t => t.length >= 2 && !INDONESIAN_STOPWORDS.has(t));
+        if (meaningfulTokens.length === 0) {
+            meaningfulTokens = rawTokens.filter(t => t.length >= 3);
+        }
+        if (meaningfulTokens.length === 0) return [];
 
         const scored = memories.map(mem => {
             let score = 0;
             const memTextLower = mem.text.toLowerCase();
 
-            for (const token of queryTokens) {
+            // 1. Exact phrase match bonus (huge priority)
+            if (cleanQuery.length > 5 && memTextLower.includes(cleanQuery)) {
+                score += 15;
+            }
+
+            // 2. Meaningful token match (+5 per keyword)
+            for (const token of meaningfulTokens) {
                 if (memTextLower.includes(token)) {
-                    score += 2;
+                    score += 5;
                 }
             }
 
-            if (mem.tags.some(tag => queryTokens.includes(tag.toLowerCase()))) {
-                score += 3;
+            // 3. Tag match
+            if (Array.isArray(mem.tags)) {
+                for (const tag of mem.tags) {
+                    if (meaningfulTokens.includes(tag.toLowerCase())) {
+                        score += 4;
+                    }
+                }
+
+                // Boost high priority corrections (/salah)
+                if (mem.tags.includes("high-priority") || mem.tags.includes("correction")) {
+                    score += 10;
+                } else if (mem.tags.includes("verified")) {
+                    score += 6;
+                } else if (mem.tags.includes("manual") || mem.tags.includes("user-fact")) {
+                    score += 8;
+                }
             }
 
-            // Boost: koreksi user (/salah) dan konfirmasi (/benar) diprioritaskan
-            // di atas fakta auto-chat biasa, supaya kesalahan yang sudah dikoreksi
-            // tidak gampang tenggelam / terulang.
-            if (mem.tags.includes("high-priority") || mem.tags.includes("correction")) {
-                score += 5;
-            } else if (mem.tags.includes("verified")) {
-                score += 2;
+            // 4. Slight recency boost
+            if (mem.timestamp) {
+                const ageHours = (Date.now() - new Date(mem.timestamp).getTime()) / (1000 * 3600);
+                if (ageHours < 24) score += 2;
             }
 
             return { ...mem, score };
         });
 
         return scored
-            .filter(item => item.score > 0)
+            .filter(item => item.score >= 5)
             .sort((a, b) => b.score - a.score)
             .slice(0, limit);
     }
 
     // --- RESPONSE FAST-CACHE ENGINE ---
+    // Fast-cache only exact static greetings/system triggers.
+    // Dynamic conversational queries are never cached globally for 24h to prevent stale answers.
 
     getCachedResponse(queryText) {
         if (!this.store._responseCache) return null;
-        const key = queryText.toLowerCase().trim().replace(/[?!.,]/g, "");
-        const cached = this.store._responseCache[key];
-        if (cached && Date.now() - cached.timestamp < 24 * 60 * 60 * 1000) { // 24-hour cache
+        const cleanQuery = queryText.toLowerCase().trim().replace(/[?!.,]/g, "");
+        const isStaticTrigger = /^(halo|hai|hi|ping|tes|test|start|\/start|\/help|\/menu)$/i.test(cleanQuery);
+        
+        if (!isStaticTrigger) return null; // Never fast-cache general conversational queries!
+
+        const cached = this.store._responseCache[cleanQuery];
+        if (cached && Date.now() - cached.timestamp < 60 * 60 * 1000) { // 1-hour cache for static
             return cached.text;
         }
         return null;
     }
 
     setCachedResponse(queryText, answerText) {
+        const cleanQuery = queryText.toLowerCase().trim().replace(/[?!.,]/g, "");
+        const isStaticTrigger = /^(halo|hai|hi|ping|tes|test|start|\/start|\/help|\/menu)$/i.test(cleanQuery);
+        if (!isStaticTrigger) return;
+
         if (!this.store._responseCache) this.store._responseCache = {};
-        const key = queryText.toLowerCase().trim().replace(/[?!.,]/g, "");
-        this.store._responseCache[key] = {
+        this.store._responseCache[cleanQuery] = {
             text: answerText,
             timestamp: Date.now()
         };
@@ -216,35 +274,30 @@ class MemoryManager {
             this.store[chatId].history = this.store[chatId].history.slice(-MAX_HISTORY);
         }
 
-        // UNIVERSAL CONTINUOUS CHAT KNOWLEDGE STORE
-        // Automatically archive every user message into Uteke Long-Term Memory Store for future semantic recall!
+        // SMART FACT EXTRACTION:
+        // Automatically save personal info/user facts if user expresses a clear statement
         const cleanText = userText.trim();
         const isCommand = cleanText.startsWith("/");
-        const isShortGreeting = /^(halo|hai|hi|p|ping|tes|test|start)$/i.test(cleanText);
+        const factPattern = /(?:nama|email|dosen|pembimbing|vps|ip|server|alamat|nomor|telepon|hp|wa|preferensi|hobi|pekerjaan|proyek|tugas)\s+(?:saya|ku|adalah|itu|yaitu|:)\s+(.+)/i;
 
-        if (!isCommand && !isShortGreeting && cleanText.length > 5) {
+        if (!isCommand && factPattern.test(cleanText)) {
             if (!this.store._longTermMemories) this.store._longTermMemories = [];
 
-            // Check if already stored recently to prevent exact duplicate spam
-            const exists = this.store._longTermMemories.some(m => m.chatId === String(chatId) && m.text.toLowerCase() === cleanText.toLowerCase());
+            const factSummary = `[User Fact]: ${cleanText}`;
+            const exists = this.store._longTermMemories.some(m => m.chatId === String(chatId) && m.text.toLowerCase() === factSummary.toLowerCase());
             if (!exists) {
                 this.store._longTermMemories.push({
                     id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
                     chatId: String(chatId),
-                    text: cleanText,
-                    tags: ["auto-chat-knowledge"],
+                    text: factSummary,
+                    tags: ["user-fact", "manual"],
                     timestamp: new Date().toISOString()
                 });
                 this.pruneLongTermMemories(chatId);
             }
         }
 
-        // Cache short conversational queries for 0.05s instant answers
-        if (userText.length < 50 && assistantText) {
-            this.setCachedResponse(userText, assistantText);
-        } else {
-            saveMemory(this.store);
-        }
+        saveMemory(this.store);
     }
 
     clear(chatId) {

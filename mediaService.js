@@ -76,6 +76,63 @@ Wajib gunakan pemisah tag ini secara tepat:
     };
 }
 
+const { chromium } = require("playwright");
+
+async function extractAndDownloadMediaFromUrl(url) {
+    let browser = null;
+    try {
+        browser = await chromium.launch({
+            headless: true,
+            args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]
+        });
+        const context = await browser.newContext({
+            userAgent: "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+            viewport: { width: 1280, height: 720 }
+        });
+
+        const page = await context.newPage();
+        await page.goto(url, { waitUntil: "networkidle", timeout: 35000 });
+
+        // Extract video or audio element src URL from page DOM
+        const videoSrc = await page.evaluate(() => {
+            const v = document.querySelector("video") || document.querySelector("audio");
+            if (v) {
+                return v.src || v.querySelector("source")?.src || null;
+            }
+            return null;
+        });
+
+        if (!videoSrc) {
+            throw new Error("Tidak menemukan elemen media video/audio pada halaman web ini. Tautan mungkin diproteksi kata sandi atau membutuhkan login.");
+        }
+
+        // Fetch direct media stream buffer
+        const response = await axios.get(videoSrc, {
+            responseType: "arraybuffer",
+            timeout: 180000,
+            headers: {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36",
+                "Referer": url
+            }
+        });
+
+        const buffer = Buffer.from(response.data);
+        const contentTypeHeader = response.headers["content-type"] || "video/mp4";
+        const mimeType = contentTypeHeader.split(";")[0].trim();
+
+        return {
+            buffer,
+            mimeType,
+            videoSrc
+        };
+    } finally {
+        if (browser) {
+            await browser.close().catch(() => {});
+        }
+    }
+}
+
 module.exports = {
-    transcribeAndSummarizeMedia
+    transcribeAndSummarizeMedia,
+    extractAndDownloadMediaFromUrl
 };

@@ -6,9 +6,11 @@ const { ConfigManager } = require("./configManager");
 const GEMINI_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-pro-latest:generateContent";
 
 async function transcribeAndSummarizeMedia(buffer, mimeType = "audio/ogg") {
-    const apiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
+    const rawKeys = ConfigManager.getApiKey("GEMINI_API_KEY") || "";
+    const apiKeys = rawKeys.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
+    const openrouterKey = ConfigManager.getApiKey("OPENROUTER_API_KEY") || process.env.OPENROUTER_API_KEY;
 
-    if (!apiKey) {
+    if (apiKeys.length === 0 && !openrouterKey) {
         throw new Error("GEMINI_API_KEY belum dikonfigurasi. Silakan atur dengan perintah:\n`/setkey GEMINI_API_KEY <api_key_anda>`");
     }
 
@@ -38,52 +40,101 @@ Wajib gunakan pemisah tag ini secara tepat:
 (Tulis rangkuman inti terstruktur di sini)
 ---RANGKUMAN_AKHIR---`;
 
-    // Model candidates: gemini-flash-latest has 15 RPM (vs 2 RPM for gemini-pro-latest)
     const models = ["gemini-flash-latest", "gemini-pro-latest"];
     let lastError = null;
     let replyText = "";
 
-    for (const model of models) {
-        const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
-        try {
-            const response = await axios.post(
-                url,
-                {
-                    contents: [
+    // 1. Try Google Direct API with key rotation & backoff retry
+    for (const apiKey of apiKeys) {
+        if (replyText) break;
+        for (const model of models) {
+            const url = `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`;
+            for (let attempt = 1; attempt <= 2; attempt++) {
+                try {
+                    const response = await axios.post(
+                        url,
                         {
-                            parts: [
+                            contents: [
                                 {
-                                    inline_data: {
-                                        mime_type: mimeType,
-                                        data: base64Data
-                                    }
-                                },
-                                { text: promptText }
+                                    parts: [
+                                        {
+                                            inline_data: {
+                                                mime_type: mimeType,
+                                                data: base64Data
+                                            }
+                                        },
+                                        { text: promptText }
+                                    ]
+                                }
                             ]
+                        },
+                        {
+                            headers: { "Content-Type": "application/json" },
+                            timeout: 180000
                         }
-                    ]
-                },
-                {
-                    headers: { "Content-Type": "application/json" },
-                    timeout: 180000
-                }
-            );
+                    );
 
-            replyText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                    replyText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                    if (replyText) break;
+                } catch (err) {
+                    lastError = err;
+                    const isRateLimit = err.response?.status === 429;
+                    if (isRateLimit && attempt < 2) {
+                        console.warn(`[Media Transcribe] ${model} hit 429 rate limit (attempt ${attempt}). Waiting 6s before retry...`);
+                        await new Promise(res => setTimeout(res, 6000));
+                    } else {
+                        break;
+                    }
+                }
+            }
             if (replyText) break;
-        } catch (err) {
-            lastError = err;
-            const isRateLimit = err.response?.status === 429;
-            if (isRateLimit) {
-                console.warn(`[Media Transcribe] Model ${model} hit rate limit (429). Retrying with next model in 2 seconds...`);
-                await new Promise(res => setTimeout(res, 2000));
+        }
+    }
+
+    // 2. OpenRouter Multimodal Fallback if Direct API hit 429 or failed
+    if (!replyText && openrouterKey) {
+        console.warn("[Media Transcribe] Direct Google API failed/rate-limited. Attempting OpenRouter multimodal fallback...");
+        const openrouterModels = ["google/gemini-2.5-flash", "google/gemini-flash-1.5"];
+        for (const orModel of openrouterModels) {
+            try {
+                const response = await axios.post(
+                    "https://openrouter.ai/api/v1/chat/completions",
+                    {
+                        model: orModel,
+                        messages: [
+                            {
+                                role: "user",
+                                content: [
+                                    { type: "text", text: promptText },
+                                    {
+                                        type: "image_url",
+                                        image_url: {
+                                            url: `data:${mimeType};base64,${base64Data}`
+                                        }
+                                    }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        headers: {
+                            Authorization: `Bearer ${openrouterKey}`,
+                            "Content-Type": "application/json"
+                        },
+                        timeout: 180000
+                    }
+                );
+                replyText = response.data?.choices?.[0]?.message?.content || "";
+                if (replyText) break;
+            } catch (orErr) {
+                lastError = orErr;
             }
         }
     }
 
     if (!replyText) {
         if (lastError?.response?.status === 429) {
-            throw new Error("Batas kuota gratis Google AI Studio (HTTP 429 Rate Limit) terlampaui. Harap tunggu 1-2 menit sebelum mencoba lagi, atau tambahkan API Key baru via `/setkey GEMINI_API_KEY <key_baru>`.");
+            throw new Error("Batas kuota gratis Google AI Studio (HTTP 429 Rate Limit) terlampaui. Harap tunggu 1-2 menit sebelum mencoba lagi, atau tambahkan API Key cadangan dipisah koma via `/setkey GEMINI_API_KEY key1,key2`.");
         }
         throw lastError || new Error("Gagal mendapatkan respons transkripsi dari model Gemini.");
     }

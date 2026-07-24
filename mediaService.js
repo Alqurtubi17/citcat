@@ -141,7 +141,7 @@ async function extractAndDownloadMediaFromUrl(url) {
         const response = await context.request.get(videoSrc, {
             headers: {
                 "Referer": page.url(),
-                "Range": "bytes=0-15000000"
+                "Range": "bytes=0-8000000"
             },
             timeout: 120000
         });

@@ -564,7 +564,7 @@ if (!CONFIG.TELEGRAM_TOKEN) {
     Logger.error("CRITICAL ERROR: TELEGRAM_TOKEN belum dikonfigurasi pada file .env!");
 }
 
-const bot = new Telegraf(CONFIG.TELEGRAM_TOKEN);
+const bot = new Telegraf(CONFIG.TELEGRAM_TOKEN, { handlerTimeout: 600000 });
 
 bot.catch((err, ctx) => {
     Logger.error(`Telegraf Catch Error (${ctx?.updateType || "unknown"}):`, err.message);

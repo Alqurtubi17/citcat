@@ -10,7 +10,13 @@
  * - Hasil dari browser dikirim kembali ke Telegram & disimpan ke Uteke Memory.
  */
 
-const { chromium } = require("playwright");
+function getPlaywrightChromium() {
+    try {
+        return require("playwright").chromium;
+    } catch (err) {
+        throw new Error("Modul Playwright belum terinstal di VM Anda. Jalankan `npm install` dan `npx playwright install chromium` di server VM.");
+    }
+}
 const { ConfigManager } = require("./configManager");
 
 // ───────────────────────────────────────────────────────────────────────────────
@@ -132,6 +138,7 @@ async function ensureLoggedInPage(serviceId, alias) {
     }
 
     // Buka browser baru (headless)
+    const chromium = getPlaywrightChromium();
     const browser = await chromium.launch({
         headless: true,
         args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-blink-features=AutomationControlled"]

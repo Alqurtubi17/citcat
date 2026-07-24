@@ -101,9 +101,15 @@ Wajib gunakan pemisah tag ini secara tepat:
     };
 }
 
-const { chromium } = require("playwright");
-
 async function extractAndDownloadMediaFromUrl(url) {
+    let playwright;
+    try {
+        playwright = require("playwright");
+    } catch (err) {
+        throw new Error("Modul Playwright belum terinstal di VM Anda. Jalankan perintah `npm install` dan `npx playwright install chromium` di server VM.");
+    }
+    const { chromium } = playwright;
+
     let browser = null;
     try {
         browser = await chromium.launch({

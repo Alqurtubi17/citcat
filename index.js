@@ -534,9 +534,10 @@ function getMainMenuMarkup() {
         ],
         [
             Markup.button.callback("🌐 Browser AI (Playwright)", "SHOW_BROWSER_ACCOUNTS"),
-            Markup.button.callback("📋 Cek Log Sistem", "SHOW_LOGS")
+            Markup.button.callback("🔑 Admin & Terminal ID", "SHOW_ADMIN_STATUS")
         ],
         [
+            Markup.button.callback("📋 Cek Log Sistem", "SHOW_LOGS"),
             Markup.button.callback("🧹 Reset Memori", "RESET_MEMORY")
         ]
     ]);
@@ -937,6 +938,13 @@ bot.action("SHOW_LOGS", async (ctx) => {
     const logText = logs.join("\n");
     await ctx.answerCbQuery();
     await TelegramPresenter.reply(ctx, `📋 *Log Aktivitas Sistem Penting CitCat (15 Terakhir):*\n\n${logText}`);
+});
+
+bot.action("SHOW_ADMIN_STATUS", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const isAdmin = TerminalService.isAuthorizedAdmin(chatId);
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, `🆔 *Status Admin & ID Telegram Anda:*\n\n• User ID: \`${chatId}\`\n• Status Otorisasi: ${isAdmin ? "✅ *TEROTORISASI (ADMIN)*" : "❌ *Bukan Admin*"}\n\n*Perintah Admin VM:*\n• Set Admin: \`/setadmin ${chatId}\`\n• Cek ID: \`/myid\`\n• Perintah Terminal: \`/cmd <perintah>\` (misal: \`/cmd pm2 status\`)`);
 });
 
 bot.action("SHOW_UTEKE_MEMORIES", async (ctx) => {

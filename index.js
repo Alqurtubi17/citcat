@@ -308,7 +308,18 @@ class AiService {
         const explicitSearchTrigger = ["carikan", "cari", "temukan", "lakukan pencarian"];
         const isExplicitSearch = explicitSearchTrigger.some(kw => lower.includes(kw));
 
-        // 2. Pure History Operation Bypass
+        // 2. Text Editing / Grammar Check / Translation Bypass
+        const textEditingKeywords = [
+            "cek grammar", "grammar", "tata bahasa", "koreksi", "perbaiki", 
+            "ejaan", "typo", "terjemahkan", "paraphrase", "bacaan"
+        ];
+
+        if (!isExplicitSearch && textEditingKeywords.some(kw => lower.includes(kw))) {
+            Logger.info("Pesan meminta koreksi tata bahasa / penyuntingan teks -> Melewati pencarian web.");
+            return false;
+        }
+
+        // 3. Pure History Operation Bypass
         const historyOperationKeywords = [
             "sebelumnya", "yang tadi", "di atas", "dari hasil", "dari jurnal",
             "ringkas hasil", "buatkan ringkasan dari", "rangkumkan dari",
@@ -321,20 +332,16 @@ class AiService {
             return false;
         }
 
-        // 2. Identity / General Questions Bypass (Do NOT search web for identity)
+        // 4. Identity / General Questions Bypass (Do NOT search web for identity)
         const identityKeywords = ["kamu siapa", "siapa kamu", "siapa anda", "anda siapa", "siapa dirimu", "apa nama bot", "siapa pembuatmu"];
         if (identityKeywords.some(kw => lower.includes(kw))) {
             return false;
         }
 
-        const searchKeywords = [
-            "carikan", "cari", "jurnal", "paper", "sinta", "berita", "terbaru", "hari ini",
-            "dimana", "kapan", "mengapa", "kenapa", "berapa", "presiden", "juara",
-            "pildun", "piala dunia", "harga", "skor", "klasemen", "update", "2026", "2025",
-            "link", "url", "situs", "artikel", "sumber", "rektor", "rektornya", "hasil", "jadwal"
-        ];
+        // Use word boundary regex for short keywords to prevent false matches (e.g. "starlink" matching "link")
+        const searchKeywordsRegex = /\b(carikan|cari|jurnal|paper|sinta|berita|terbaru|hari ini|dimana|kapan|mengapa|kenapa|berapa|presiden|juara|pildun|piala dunia|harga|skor|klasemen|update|2026|2025|link|url|situs|artikel|sumber|rektor|rektornya|hasil|jadwal)\b/i;
 
-        return searchKeywords.some(kw => lower.includes(kw));
+        return searchKeywordsRegex.test(lower);
     }
 
     static buildSearchQuery(userText, history = []) {
@@ -1674,7 +1681,7 @@ bot.on("text", async (ctx) => {
             if (userMode === "RESEARCH") {
                 finalUserPayload = `HASIL PENCARIAN WEB RISET AKADEMIK:\n${searchContext}\n\nPERTANYAAN USER:\n${userText}\n\nPetunjuk Riset: Tampilkan analisis ringkas ilmiah, judul jurnal utuh, dan URL ASLI yang tertera di atas.`;
             } else {
-                finalUserPayload = `HASIL PENCARIAN & SCRAPING WEB REAL-TIME:\n${searchContext}\n\nPERTANYAAN USER:\n${userText}\n\nPetunjuk Utama: Bacalah data hasil scraping di atas secara teliti, lalu JELASKAN JAWABAN LENGKAP DENGAN RINCIAN ANGKA, HARGA, ATAU KURS (misalnya rincian harga emas per gram atau nilai kurs USD/IDR). Sertakan URL sumber di akhir jawaban sebagai referensi.`;
+                finalUserPayload = `HASIL PENCARIAN & SCRAPING WEB REAL-TIME:\n${searchContext}\n\nPERTANYAAN USER:\n${userText}\n\nPetunjuk Utama: Bacalah data hasil scraping di atas secara teliti. Jawablah PERTANYAAN USER secara langsung, fokus, dan tepat sasaran berdasarkan data tersebut. JANGAN menambahkan informasi berlebihan (seperti rincian harga, spesifikasi, atau data ekstra) KECUALI jika pengguna memintanya secara eksplisit. Sertakan URL sumber di akhir jawaban jika relevan.`;
             }
         }
 

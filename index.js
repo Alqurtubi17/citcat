@@ -106,6 +106,7 @@ class TextSanitizer {
             .replace(/<think>[\s\S]*?<\/think>/gi, "")
             .replace(/<br\s*\/?>/gi, "\n")
             .replace(/<[^>]*>?/gm, "")
+            .replace(/^#{1,6}\s+(.+)$/gm, "*$1*")        // Convert Markdown headers (#, ##, ###) to Telegram bold (*Header*)
             .replace(/[\u0300-\u036f]/g, "")             // Remove combining diacritical marks
             .replace(/[\u10A0-\u10FF]/g, "")             // Remove Georgian alphabet
             .replace(/[\u0400-\u04FF]/g, "")             // Remove Cyrillic alphabet

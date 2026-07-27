@@ -518,8 +518,12 @@ class TelegramPresenter {
     }
 }
 
-function getMainMenuMarkup() {
-    return Markup.inlineKeyboard([
+function getMainMenuMarkup(chatId = null) {
+    const isAdmin = TerminalService.isAuthorizedAdmin(chatId);
+    const configuredAdmin = ConfigManager.getAdminUserId();
+    const isConfigured = !!configuredAdmin;
+
+    const rows = [
         [
             Markup.button.callback("🖼️ OCR Vision & Excel", "MODE_OCR"),
             Markup.button.callback("🎙️ Transkrip & PDF", "MODE_TRANSCRIBE")
@@ -531,16 +535,29 @@ function getMainMenuMarkup() {
         [
             Markup.button.callback("🛠️ DevOps & Linux", "MODE_DEVOPS"),
             Markup.button.callback("🤖 Atur Model AI", "SHOW_MODEL_SETTINGS")
-        ],
-        [
-            Markup.button.callback("🌐 Browser AI (Playwright)", "SHOW_BROWSER_ACCOUNTS"),
-            Markup.button.callback("🔑 Admin & Terminal ID", "SHOW_ADMIN_STATUS")
-        ],
-        [
-            Markup.button.callback("📋 Cek Log Sistem", "SHOW_LOGS"),
-            Markup.button.callback("🧹 Reset Memori", "RESET_MEMORY")
         ]
-    ]);
+    ];
+
+    const utilityRow = [
+        Markup.button.callback("🌐 Browser AI (Playwright)", "SHOW_BROWSER_ACCOUNTS")
+    ];
+
+    // Hanya tampilkan tombol Admin jika user adalah Admin yang terotorisasi
+    // (atau jika belum ada admin yang di-set sama sekali agar owner bisa mendaftar pertama kali).
+    if (isAdmin || !isConfigured) {
+        utilityRow.push(Markup.button.callback(isAdmin ? "🔑 Status Admin VM" : "🔐 Setup Admin VM", "SHOW_ADMIN_STATUS"));
+    }
+    rows.push(utilityRow);
+
+    const bottomRow = [
+        Markup.button.callback("🧹 Reset Memori", "RESET_MEMORY")
+    ];
+    if (isAdmin) {
+        bottomRow.unshift(Markup.button.callback("📋 Cek Log Sistem", "SHOW_LOGS"));
+    }
+    rows.push(bottomRow);
+
+    return Markup.inlineKeyboard(rows);
 }
 
 function getModelPresetKeyboard() {
@@ -580,35 +597,65 @@ bot.catch((err, ctx) => {
     Logger.error(`Telegraf Catch Error (${ctx?.updateType || "unknown"}):`, err.message);
 });
 
-bot.telegram.setMyCommands([
-    { command: "start", description: "Tampilkan menu utama & greeting" },
-    { command: "logs", description: "Tampilkan log aktivitas & error sistem penting" },
-    { command: "ingat", description: "Simpan ingatan permanen Uteke Engine (/ingat <teks>)" },
-    { command: "memori", description: "Lihat ingatan permanen Uteke Engine" },
-    { command: "lupa", description: "Hapus ingatan permanen (/lupa <id_atau_kata>)" },
-    { command: "ocr", description: "OCR Foto/Dokumen ke Excel & PDF (Gemini Vision)" },
-    { command: "transcribe", description: "Transkrip Voice/Audio/Video ke PDF (Gemini Pro)" },
-    { command: "model", description: "Cek & ganti model AI aktif" },
-    { command: "gantimodel", description: "Set model utama (/gantimodel <nama>)" },
-    { command: "tambahmodel", description: "Tambah model fallback (/tambahmodel <nama>)" },
-    { command: "setkey", description: "Set API Key (/setkey <KEY> <VALUE>)" },
-    { command: "myid", description: "Cek Telegram User ID Anda" },
-    { command: "setadmin", description: "Set Admin VM (/setadmin <user_id>)" },
-    { command: "cmd", description: "Eksekusi perintah terminal VM (/cmd <perintah>)" },
-    { command: "research", description: "Riset Jurnal & Paper Akademik" },
-    { command: "coding", description: "Bantuan Fullstack Koding & Scripting" },
-    { command: "devops", description: "Bantuan Server, Docker & Linux" },
-    { command: "singkatan", description: "Lihat memori singkatan kustom" },
-    { command: "benar", description: "Konfirmasi jawaban terakhir sudah benar" },
-    { command: "salah", description: "Koreksi jawaban terakhir (/salah <jawaban benar>)" },
-    { command: "reset", description: "Hapus riwayat percakapan" }
-]).catch(err => Logger.warn("SetMyCommands error:", err.message));
+async function registerTelegramCommandScopes(botInstance) {
+    try {
+        const publicCommands = [
+            { command: "start", description: "Tampilkan menu utama & greeting" },
+            { command: "myid", description: "Cek Telegram User ID Anda" },
+            { command: "ocr", description: "OCR Foto/Dokumen ke Excel & PDF (Gemini Vision)" },
+            { command: "transcribe", description: "Transkrip Voice/Audio/Video ke PDF (Gemini Pro)" },
+            { command: "model", description: "Cek & ganti model AI aktif" },
+            { command: "research", description: "Riset Jurnal & Paper Akademik" },
+            { command: "coding", description: "Bantuan Fullstack Koding & Scripting" },
+            { command: "devops", description: "Bantuan Server, Docker & Linux" },
+            { command: "ingat", description: "Simpan ingatan permanen Uteke Engine (/ingat <teks>)" },
+            { command: "memori", description: "Lihat ingatan permanen Uteke Engine" },
+            { command: "lupa", description: "Hapus ingatan permanen (/lupa <id_atau_kata>)" },
+            { command: "singkatan", description: "Lihat memori singkatan kustom" },
+            { command: "benar", description: "Konfirmasi jawaban terakhir sudah benar" },
+            { command: "salah", description: "Koreksi jawaban terakhir (/salah <jawaban benar>)" },
+            { command: "reset", description: "Hapus riwayat percakapan" }
+        ];
+
+        const adminCommands = [
+            ...publicCommands,
+            { command: "cmd", description: "Eksekusi perintah terminal VM (/cmd <perintah>)" },
+            { command: "setadmin", description: "Set Admin VM (/setadmin <user_id>)" },
+            { command: "setkey", description: "Set API Key (/setkey <KEY> <VALUE>)" },
+            { command: "logs", description: "Tampilkan log aktivitas & error sistem penting" },
+            { command: "gantimodel", description: "Set model utama (/gantimodel <nama>)" },
+            { command: "tambahmodel", description: "Tambah model fallback (/tambahmodel <nama>)" }
+        ];
+
+        const adminUserId = ConfigManager.getAdminUserId();
+
+        if (!adminUserId) {
+            await botInstance.telegram.setMyCommands([
+                ...publicCommands,
+                { command: "setadmin", description: "Set Admin VM (/setadmin <user_id>)" }
+            ], { scope: { type: "default" } });
+            Logger.info("Telegram command list registered (Default Scope - Admin not set yet).");
+        } else {
+            // 1. Scope Publik (Pengguna non-admin HANYA melihat publicCommands)
+            await botInstance.telegram.setMyCommands(publicCommands, { scope: { type: "default" } });
+
+            // 2. Scope Admin Khusus (HANYA Chat ID Admin yang melihat adminCommands)
+            await botInstance.telegram.setMyCommands(adminCommands, {
+                scope: { type: "chat", chat_id: Number(adminUserId) || String(adminUserId) }
+            });
+            Logger.info(`Telegram command list registered & scoped specifically for Admin ID ${adminUserId}.`);
+        }
+    } catch (err) {
+        Logger.warn("Register Telegram Command Scopes error:", err.message);
+    }
+}
 
 bot.start(async (ctx) => {
+    const chatId = String(ctx.chat.id);
     await TelegramPresenter.reply(
         ctx,
         `Halo 👋 Selamat datang di *CitCat Production AI Agent*!\n\nPilih mode spesialis dari menu tombol interaktif di bawah atau tekan tombol \`/\` di keyboard Telegram Anda:`,
-        getMainMenuMarkup()
+        getMainMenuMarkup(chatId)
     );
 });
 
@@ -805,6 +852,13 @@ bot.command("myid", async (ctx) => {
 
 bot.command("setadmin", async (ctx) => {
     const chatId = String(ctx.chat.id);
+    const currentAdmin = ConfigManager.getAdminUserId();
+
+    if (currentAdmin && !TerminalService.isAuthorizedAdmin(chatId)) {
+        await TelegramPresenter.reply(ctx, `⛔ *Akses Ditolak!*\n\nAdmin VM sudah terkonfigurasi untuk ID: \`${currentAdmin}\`.\nHanya Admin terdaftar yang berhak merubah ID Admin.`);
+        return;
+    }
+
     const text = ctx.message.text.trim();
     const parts = text.split(/\s+/);
 
@@ -816,7 +870,11 @@ bot.command("setadmin", async (ctx) => {
     const targetAdminId = parts[1].trim();
     ConfigManager.setAdminUserId(targetAdminId);
     Logger.info(`Admin User ID diperbarui ke: ${targetAdminId}`);
-    await TelegramPresenter.reply(ctx, `🔐 *Admin User ID Berhasil Disimpan!*\n\n• ID Admin Aktif: \`${targetAdminId}\`\n• Akun ini sekarang berhak mengeksekusi perintah terminal VM & mengedit file sistem!`);
+
+    // Update command scope di Telegram secara real-time!
+    await registerTelegramCommandScopes(bot);
+
+    await TelegramPresenter.reply(ctx, `🔐 *Admin User ID Berhasil Disimpan!*\n\n• ID Admin Aktif: \`${targetAdminId}\`\n• Perintah Admin (/cmd, /setadmin, /setkey, /logs) sekarang di-scope khusus HANYA untuk akun ini.\n• Pengguna publik/non-admin tidak akan lagi melihat menu admin di keyboard Telegram mereka!`);
 });
 
 bot.command(["cmd", "exec", "sys", "terminal"], async (ctx) => {
@@ -1469,7 +1527,7 @@ bot.on("text", async (ctx) => {
             await TelegramPresenter.reply(
                 ctx,
                 `Halo 👋 Selamat datang di *CitCat Production AI Agent*!\n\nPilih mode spesialis dari menu tombol interaktif di bawah atau tekan tombol \`/\` di keyboard Telegram Anda:`,
-                getMainMenuMarkup()
+                getMainMenuMarkup(chatId)
             );
             return;
         }
@@ -1811,6 +1869,7 @@ bot.on("text", async (ctx) => {
         await bot.telegram.deleteWebhook({ drop_pending_updates: true });
 
         await bot.launch();
+        await registerTelegramCommandScopes(bot);
         Logger.info("🚀 Bot CitCat sukses terhubung ke Telegram & aktif menerima pesan via Long Polling!");
     } catch (err) {
         Logger.error("CRITICAL ERROR saat meluncurkan Telegraf Bot:", err.message);

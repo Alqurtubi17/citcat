@@ -15,6 +15,7 @@ const { transcribeAndSummarizeMedia, extractAndDownloadMediaFromUrl } = require(
 const { processImageOcr } = require("./ocrService");
 const { askGeminiDirect } = require("./geminiService");
 const { BROWSER_SERVICES, saveBrowserAccount, listBrowserAccounts, removeBrowserAccount, askViaBrowser, closeAllBrowserSessions } = require("./playwrightService");
+const { TerminalService } = require("./terminalService");
 
 
 const chatAgent = require("./agents/chat");
@@ -590,6 +591,9 @@ bot.telegram.setMyCommands([
     { command: "gantimodel", description: "Set model utama (/gantimodel <nama>)" },
     { command: "tambahmodel", description: "Tambah model fallback (/tambahmodel <nama>)" },
     { command: "setkey", description: "Set API Key (/setkey <KEY> <VALUE>)" },
+    { command: "myid", description: "Cek Telegram User ID Anda" },
+    { command: "setadmin", description: "Set Admin VM (/setadmin <user_id>)" },
+    { command: "cmd", description: "Eksekusi perintah terminal VM (/cmd <perintah>)" },
     { command: "research", description: "Riset Jurnal & Paper Akademik" },
     { command: "coding", description: "Bantuan Fullstack Koding & Scripting" },
     { command: "devops", description: "Bantuan Server, Docker & Linux" },
@@ -789,6 +793,53 @@ bot.command("setkey", async (ctx) => {
     ConfigManager.setApiKey(keyName, keyValue);
     Logger.info(`API Key ${keyName} berhasil diperbarui.`);
     await TelegramPresenter.reply(ctx, `🔑 *API Key Berhasil Disimpan!*\n\n• Key: \`${keyName}\`\n• Status: Tersimpan aman di server VM Anda`);
+});
+
+// SYSTEM TERMINAL & ADMIN EXECUTION COMMANDS
+bot.command("myid", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const isAdmin = TerminalService.isAuthorizedAdmin(chatId);
+    await TelegramPresenter.reply(ctx, `🆔 *ID Telegram Anda:* \`${chatId}\`\n\n• Status Admin: ${isAdmin ? "✅ *TEROTORISASI (ADMIN)*" : "❌ *Bukan Admin*"}\n\n*Pasang Admin:* \`/setadmin ${chatId}\``);
+});
+
+bot.command("setadmin", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    const text = ctx.message.text.trim();
+    const parts = text.split(/\s+/);
+
+    if (parts.length < 2) {
+        await TelegramPresenter.reply(ctx, `⚠️ *Format Salah!*\nGunakan format: \`/setadmin <user_id>\`\n\nID Telegram Anda: \`${chatId}\`\nKetik: \`/setadmin ${chatId}\` untuk mendaftarkan akun ini sebagai Admin VM.`);
+        return;
+    }
+
+    const targetAdminId = parts[1].trim();
+    ConfigManager.setAdminUserId(targetAdminId);
+    Logger.info(`Admin User ID diperbarui ke: ${targetAdminId}`);
+    await TelegramPresenter.reply(ctx, `🔐 *Admin User ID Berhasil Disimpan!*\n\n• ID Admin Aktif: \`${targetAdminId}\`\n• Akun ini sekarang berhak mengeksekusi perintah terminal VM & mengedit file sistem!`);
+});
+
+bot.command(["cmd", "exec", "sys", "terminal"], async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    if (!TerminalService.isAuthorizedAdmin(chatId)) {
+        await TelegramPresenter.reply(ctx, `⛔ *Akses Ditolak!*\n\nAnda tidak memiliki izin untuk mengeksekusi perintah terminal di VM ini.\n\nID Anda: \`${chatId}\`\nJika ini server Anda, set akun ini sebagai Admin dengan perintah:\n\`/setadmin ${chatId}\``);
+        return;
+    }
+
+    const text = ctx.message.text.trim();
+    const commandToRun = text.replace(/^\/(cmd|exec|sys|terminal)\s*/i, "").trim();
+
+    if (!commandToRun) {
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format: `/cmd <perintah_terminal>`\n\nContoh:\n`/cmd pm2 status`\n`/cmd dir` atau `/cmd ls -la`\n`/cmd git status`");
+        return;
+    }
+
+    await TelegramPresenter.reply(ctx, `⚙️ *Mengeksekusi perintah di VM:* \`${commandToRun}\`...\n\nHarap tunggu...`);
+    await ctx.sendChatAction("typing");
+
+    const result = await TerminalService.executeCommand(commandToRun);
+    const statusEmoji = result.success ? "✅" : "❌";
+    
+    await TelegramPresenter.reply(ctx, `${statusEmoji} *Hasil Eksekusi Terminal:* \`[Code ${result.code}]\`\n\n\`\`\`text\n${result.output}\n\`\`\``);
 });
 
 bot.command("ocr", async (ctx) => {
@@ -1666,6 +1717,11 @@ bot.on("text", async (ctx) => {
         ];
 
         let finalUserPayload = `[WAKTU REAL-TIME SEKARANG (WIB)]: ${currentDateWib}\n\n${userText}`;
+
+        if (userMode === "DEVOPS" && TerminalService.isAuthorizedAdmin(chatId)) {
+            const sysInfo = `[INFORMASI SERVING VM REAL-TIME]: OS: ${process.platform} | Node.js: ${process.version} | Memory: ${Math.round(process.memoryUsage().rss / 1024 / 1024)} MB | Working Directory: ${process.cwd()} | Admin Status: TEROTORISASI (Bisa gunakan /cmd <command> untuk eksekusi langsung)`;
+            finalUserPayload = `${sysInfo}\n\n${finalUserPayload}`;
+        }
 
         if (utekeMemoryContext) {
             finalUserPayload = `INGATAN JANGKA PANJANG UTEKE (INGATAN PENGGUNA RELEVAN):\n${utekeMemoryContext}\n\n${finalUserPayload}`;

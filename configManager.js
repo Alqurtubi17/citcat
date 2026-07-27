@@ -14,7 +14,8 @@ const defaultConfig = {
     apiKeys: {
         OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || "",
         GEMINI_API_KEY: process.env.GEMINI_API_KEY || process.env.GOOGLE_API_KEY || ""
-    }
+    },
+    adminUserId: process.env.ADMIN_USER_ID || ""
 };
 
 class ConfigManager {
@@ -130,6 +131,19 @@ class ConfigManager {
         const normalizedKey = keyName.toUpperCase();
         const cfg = this.loadConfig();
         return cfg.apiKeys?.[normalizedKey] || process.env[normalizedKey] || "";
+    }
+
+    static getAdminUserId() {
+        const cfg = this.loadConfig();
+        return cfg.adminUserId || process.env.ADMIN_USER_ID || "";
+    }
+
+    static setAdminUserId(userId) {
+        const cfg = this.loadConfig();
+        cfg.adminUserId = String(userId).trim();
+        this.saveConfig(cfg);
+        process.env.ADMIN_USER_ID = String(userId).trim();
+        return cfg;
     }
 }
 

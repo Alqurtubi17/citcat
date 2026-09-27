@@ -6,36 +6,51 @@ class AutonomousToolService {
      */
     static getToolSystemPrompt(osPlatform = process.platform) {
         return `
-[KEMAMPUAN OTONOM SISTEM SERVER & TERMINAL VM (KHUSUS ADMIN)]:
-Anda TERHUBUNG LANGSUNG ke sistem operasi (${osPlatform}) mesin server/VM ini dengan hak eksekusi aktif melalui modul Terminal.
+[KEMAMPUAN OTONOM REWRITE KODE, TERMINAL & SISTEM SERVER (KHUSUS ADMIN)]:
+Anda TERHUBUNG LANGSUNG ke sistem operasi (${osPlatform}) dan direktori proyek bot ini dengan hak eksekusi aktif.
 
 DILARANG KERAS:
-- DILARANG mengatakan "Saya adalah asisten AI berbasis teks yang tidak memiliki akses fisik/terminal/server".
-- DILARANG menolak jika Admin meminta Anda menjalankan perintah, membuat skrip, memeriksa status server, atau berkata "kamu yang jalankan aja". Anda memiliki izin dan perkakas langsung untuk melakukannya!
+- DILARANG mengatakan "Saya adalah model AI berbasis teks yang tidak dapat mengedit/membaca file atau mengakses terminal".
+- DILARANG menolak jika Admin meminta Anda membaca file, menulis ulang (rewrite) kode, memperbaiki bug, merefaktor, atau mengeksekusi perintah terminal. Anda memiliki izin dan perkakas lengkap untuk melakukannya!
 
 FORMAT PENGGUNAAN TOOL:
-Jika Admin meminta Anda mengeksekusi perintah atau membuat/membaca file, Anda WAJIB menyertakan tag aksi berikut di dalam respon Anda:
+Jika Admin meminta Anda membaca, menulis ulang kode, atau mengeksekusi perintah, sertakan tag aksi berikut di dalam respon Anda:
 
-1. Mengeksekusi perintah terminal / bash / shell:
-<execute_command>
-perintah terminal di sini
-</execute_command>
+1. Menulis Ulang / Mengganti Potongan Kode (Surgical Rewrite & Refactoring):
+Gunakan tag ini untuk mengubah, memperbaiki, atau me-rewrite sebagian kode pada file yang ada. Kode otomatis dibackup ke .backups/ dan divalidasi sintaksnya (node --check):
+<replace_in_file path="path/file/tujuan">
+<target_code>
+potongan kode lama persis yang akan diganti
+</target_code>
+<replacement_code>
+kode baru pengganti yang sudah direwrite/diperbaiki
+</replacement_code>
+</replace_in_file>
 
-2. Menulis / membuat file langsung di server:
+2. Membaca Isi File Kode (Bisa Seluruhnya atau Per Baris):
+<read_file path="path/file/tujuan" />
+Atau jika file panjang, baca rentang baris tertentu:
+<read_file path="path/file/tujuan" start_line="1" end_line="80" />
+
+3. Menulis File Baru atau Menulis Ulang File Utuh:
 <write_file path="path/file/tujuan">
-isi konten file di sini
+isi konten file lengkap di sini
 </write_file>
 
-3. Membaca isi file di server:
-<read_file path="path/file/tujuan" />
+4. Mengeksekusi Perintah Terminal / Shell:
+<execute_command>
+perintah terminal di sini (misal: node -c index.js, git status, npm test)
+</execute_command>
 
-4. Melihat daftar file di folder:
+5. Melihat Daftar File di Folder:
 <list_dir path="path/folder" />
 
-ATURAN EKSEKUSI OTONOM:
-- Jika Admin berkata "kamu yang jalankan aja semua", "jalankan skrip tadi", atau "eksekusi ini", segera jalankan skrip/perintah yang baru saja dibahas menggunakan tag di atas.
-- Anda dapat menyertakan teks pengantar singkat sebelum tag tool.
-- Sistem bot akan mengeksekusi tag tersebut di server dan mengirimkan kembali hasilnya (<tool_result>) kepada Anda secara otomatis, lalu Anda dapat memberikan laporan konfirmasi akhir kepada Admin.
+ALUR KERJA REWRITE KODE:
+- Saat diminta me-rewrite kode:
+  1. Jika belum tahu persis baris/isinya, gunakan <read_file> untuk membaca kode target terlebih dahulu.
+  2. Gunakan <replace_in_file> untuk mengganti potongan fungsi/blok kode lama dengan kode baru hasil rewrite secara presisi, ATAU gunakan <write_file> jika menulis ulang file kecil/baru.
+  3. Setiap perubahan file kode JavaScript otomatis diverifikasi dengan 'node --check'. Jika sintaks salah, sistem otomatis me-rollback perubahan dan memberi tahu errornya agar Anda dapat memperbaikinya.
+- Sistem bot akan mengeksekusi tag aksi tersebut secara nyata dan mengembalikan hasilnya (<tool_result>) kepada Anda.
 `;
     }
 
@@ -45,9 +60,10 @@ ATURAN EKSEKUSI OTONOM:
     static hasToolCalls(text) {
         if (!text || typeof text !== "string") return false;
         return (
+            /<replace_in_file[\s\S]*?<\/replace_in_file>/i.test(text) ||
             /<execute_command>[\s\S]*?<\/execute_command>/i.test(text) ||
             /<write_file\s+path=["']([^"']+)["']>[\s\S]*?<\/write_file>/i.test(text) ||
-            /<read_file\s+path=["']([^"']+)["']\s*\/?\>/i.test(text) ||
+            /<read_file\s+path=["']([^"']+)["']/i.test(text) ||
             /<list_dir\s*(?:path=["']([^"']+)["'])?\s*\/?\>/i.test(text)
         );
     }
@@ -59,9 +75,20 @@ ATURAN EKSEKUSI OTONOM:
         const calls = [];
         if (!text || typeof text !== "string") return calls;
 
-        // 1. Parse <write_file path="...">content</write_file>
-        const writeFileRegex = /<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/gi;
+        // 1. Parse <replace_in_file path="..."> <target_code>...</target_code> <replacement_code>...</replacement_code> </replace_in_file>
+        const replaceFileRegex = /<replace_in_file\s+path=["']([^"']+)["']>[\s\S]*?<target_code>([\s\S]*?)<\/target_code>[\s\S]*?<replacement_code>([\s\S]*?)<\/replacement_code>[\s\S]*?<\/replace_in_file>/gi;
         let match;
+        while ((match = replaceFileRegex.exec(text)) !== null) {
+            calls.push({
+                type: "replace_in_file",
+                path: match[1].trim(),
+                targetCode: match[2],
+                replacementCode: match[3]
+            });
+        }
+
+        // 2. Parse <write_file path="...">content</write_file>
+        const writeFileRegex = /<write_file\s+path=["']([^"']+)["']>([\s\S]*?)<\/write_file>/gi;
         while ((match = writeFileRegex.exec(text)) !== null) {
             calls.push({
                 type: "write_file",
@@ -70,7 +97,7 @@ ATURAN EKSEKUSI OTONOM:
             });
         }
 
-        // 2. Parse <execute_command>command</execute_command>
+        // 3. Parse <execute_command>command</execute_command>
         const execCommandRegex = /<execute_command>([\s\S]*?)<\/execute_command>/gi;
         while ((match = execCommandRegex.exec(text)) !== null) {
             const command = match[1].trim();
@@ -82,16 +109,18 @@ ATURAN EKSEKUSI OTONOM:
             }
         }
 
-        // 3. Parse <read_file path="..." />
-        const readFileRegex = /<read_file\s+path=["']([^"']+)["']\s*\/?\>/gi;
+        // 4. Parse <read_file path="..." start_line="..." end_line="..." />
+        const readFileRegex = /<read_file\s+path=["']([^"']+)["'](?:\s+start_line=["']?(\d+)["']?)?(?:\s+end_line=["']?(\d+)["']?)?\s*\/?\>/gi;
         while ((match = readFileRegex.exec(text)) !== null) {
             calls.push({
                 type: "read_file",
-                path: match[1].trim()
+                path: match[1].trim(),
+                startLine: match[2] ? parseInt(match[2], 10) : null,
+                endLine: match[3] ? parseInt(match[3], 10) : null
             });
         }
 
-        // 4. Parse <list_dir path="..." />
+        // 5. Parse <list_dir path="..." />
         const listDirRegex = /<list_dir(?:\s+path=["']([^"']+)["'])?\s*\/?\>/gi;
         while ((match = listDirRegex.exec(text)) !== null) {
             calls.push({
@@ -109,9 +138,10 @@ ATURAN EKSEKUSI OTONOM:
     static cleanToolTags(text) {
         if (!text || typeof text !== "string") return "";
         return text
+            .replace(/<replace_in_file[\s\S]*?<\/replace_in_file>/gi, "")
             .replace(/<execute_command>[\s\S]*?<\/execute_command>/gi, "")
             .replace(/<write_file\s+path=["'][^"']+["']>[\s\S]*?<\/write_file>/gi, "")
-            .replace(/<read_file\s+path=["'][^"']+["']\s*\/?\>/gi, "")
+            .replace(/<read_file[\s\S]*?\/?\>/gi, "")
             .replace(/<list_dir(?:\s+path=["'][^"']+["'])?\s*\/?\>/gi, "")
             .replace(/\n{3,}/g, "\n\n")
             .trim();
@@ -122,6 +152,35 @@ ATURAN EKSEKUSI OTONOM:
      */
     static async executeTool(toolCall) {
         switch (toolCall.type) {
+            case "replace_in_file": {
+                const result = await TerminalService.replaceInFile(toolCall.path, toolCall.targetCode, toolCall.replacementCode);
+                return {
+                    tool: "replace_in_file",
+                    path: toolCall.path,
+                    success: result.success,
+                    output: result.output || result.error
+                };
+            }
+            case "write_file": {
+                const result = await TerminalService.writeFile(toolCall.path, toolCall.content);
+                return {
+                    tool: "write_file",
+                    path: toolCall.path,
+                    success: result.success,
+                    output: result.output || result.error
+                };
+            }
+            case "read_file": {
+                const result = TerminalService.readFile(toolCall.path, toolCall.startLine, toolCall.endLine);
+                return {
+                    tool: "read_file",
+                    path: toolCall.path,
+                    success: result.success,
+                    output: result.success
+                        ? result.content
+                        : `Gagal membaca file: ${result.error}`
+                };
+            }
             case "execute_command": {
                 const result = await TerminalService.executeCommand(toolCall.command);
                 return {
@@ -130,28 +189,6 @@ ATURAN EKSEKUSI OTONOM:
                     success: result.success,
                     code: result.code,
                     output: result.output
-                };
-            }
-            case "write_file": {
-                const result = TerminalService.writeFile(toolCall.path, toolCall.content);
-                return {
-                    tool: "write_file",
-                    path: toolCall.path,
-                    success: result.success,
-                    output: result.success
-                        ? `File berhasil ditulis ke: ${result.path}`
-                        : `Gagal menulis file: ${result.error}`
-                };
-            }
-            case "read_file": {
-                const result = TerminalService.readFile(toolCall.path);
-                return {
-                    tool: "read_file",
-                    path: toolCall.path,
-                    success: result.success,
-                    output: result.success
-                        ? result.content
-                        : `Gagal membaca file: ${result.error}`
                 };
             }
             case "list_dir": {
@@ -191,7 +228,7 @@ ATURAN EKSEKUSI OTONOM:
         messages,
         askAiFn,
         onProgress = async () => {},
-        maxIterations = 3
+        maxIterations = 4
     }) {
         const conversationMessages = [...messages];
         let iteration = 0;
@@ -225,12 +262,15 @@ ATURAN EKSEKUSI OTONOM:
             const currentTurnResults = [];
             for (const call of toolCalls) {
                 let actionSummary = "";
-                if (call.type === "execute_command") {
-                    actionSummary = `Mengeksekusi terminal: \`${call.command}\``;
+                if (call.type === "replace_in_file") {
+                    actionSummary = `Me-rewrite/memperbaiki kode: \`${call.path}\``;
                 } else if (call.type === "write_file") {
                     actionSummary = `Membuat/menulis file: \`${call.path}\``;
                 } else if (call.type === "read_file") {
-                    actionSummary = `Membaca file: \`${call.path}\``;
+                    const range = call.startLine ? ` (baris ${call.startLine}-${call.endLine})` : "";
+                    actionSummary = `Membaca file: \`${call.path}\`${range}`;
+                } else if (call.type === "execute_command") {
+                    actionSummary = `Mengeksekusi terminal: \`${call.command}\``;
                 } else if (call.type === "list_dir") {
                     actionSummary = `Melihat isi folder: \`${call.path}\``;
                 }
@@ -260,7 +300,7 @@ ATURAN EKSEKUSI OTONOM:
                 role: "user",
                 content: isLastTurn
                     ? `[HASIL EKSEKUSI OTONOM DI SERVER/VM]:\n${formattedResults}\n\nSeluruh rangkaian perintah eksekusi awal telah selesai. Sekarang, tolong berikan analisis hasil di atas, status sistem saat ini, serta kesimpulan/rekomendasi akhir secara jelas kepada Admin (DILARANG menggunakan tag tool lagi).`
-                    : `[HASIL EKSEKUSI OTONOM DI SERVER/VM]:\n${formattedResults}\n\nSilakan evaluasi hasil di atas. Jika semua perintah sudah selesai, berikan laporan konfirmasi akhir kepada Admin. Jika masih ada langkah berikutnya, gunakan tag tool yang sesuai.`
+                    : `[HASIL EKSEKUSI OTONOM DI SERVER/VM]:\n${formattedResults}\n\nSilakan evaluasi hasil di atas. Jika semua perintah sudah selesai, berikan laporan konfirmasi akhir kepada Admin. Jika masih ada langkah berikutnya (misal: verifikasi sintaks atau langkah rewrite selanjutnya), gunakan tag tool yang sesuai.`
             });
 
             if (isLastTurn) {

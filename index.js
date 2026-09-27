@@ -779,6 +779,7 @@ async function registerTelegramCommandScopes(botInstance) {
         const adminCommands = [
             ...publicCommands,
             { command: "selfhealing", description: "Status & perbaikan otomatis Hermes Agent" },
+            { command: "rewrite", description: "Rewrite / refactor kode sumber file (/rewrite <file> <instruksi>)" },
             { command: "cmd", description: "Eksekusi perintah terminal VM (/cmd <perintah>)" },
             { command: "setadmin", description: "Set Admin VM (/setadmin <user_id>)" },
             { command: "setkey", description: "Set API Key (/setkey <KEY> <VALUE>)" },
@@ -1108,6 +1109,78 @@ bot.command(["cmd", "exec", "sys", "terminal"], async (ctx) => {
     const statusEmoji = result.success ? "✅" : "❌";
     
     await TelegramPresenter.reply(ctx, `${statusEmoji} *Hasil Eksekusi Terminal:* \`[Code ${result.code}]\`\n\n\`\`\`text\n${result.output}\n\`\`\``);
+});
+
+bot.command("rewrite", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    if (!TerminalService.isAuthorizedAdmin(chatId)) {
+        await TelegramPresenter.reply(ctx, "⛔ Akses ditolak. Hanya Admin terotorisasi yang dapat me-rewrite kode server.");
+        return;
+    }
+
+    const text = ctx.message.text.trim();
+    const parts = text.split(/\s+/);
+    if (parts.length < 3) {
+        await TelegramPresenter.reply(ctx, "⚠️ *Format Salah!*\nGunakan format:\n`/rewrite <file_path> <instruksi_rewrite>`\n\nContoh:\n`/rewrite agents/hermes.js perbaiki prompt penalaran`\n`/rewrite configManager.js tambahkan model baru`");
+        return;
+    }
+
+    const targetFile = parts[1].trim();
+    const instruction = parts.slice(2).join(" ").trim();
+
+    const readResult = TerminalService.readFile(targetFile);
+    if (!readResult.success) {
+        await TelegramPresenter.reply(ctx, `❌ Gagal membaca file target: ${readResult.error}\nPastikan path file relatif terhadap root proyek.`);
+        return;
+    }
+
+    await TelegramPresenter.reply(ctx, `🧠 *Hermes Autonomous Code Rewrite Aktif*\n• *File Target:* \`${targetFile}\` (${readResult.totalLines} baris)\n• *Instruksi:* ${instruction}\n\nSedang menganalisis kode dan menerapkan perbaikan/rewrite... (Mohon tunggu sebentar)`);
+    await ctx.sendChatAction("typing");
+
+    const systemPrompt = hermesAgent.getPrompt() +
+        `\n\n[INFORMASI SERVING VM REAL-TIME]: OS: ${process.platform} | Node.js: ${process.version} | Working Directory: ${process.cwd()} | Admin Status: TEROTORISASI` +
+        `\n${AutonomousToolService.getToolSystemPrompt(process.platform)}`;
+
+    const userPrompt = `[PERINTAH REWRITE KODE DARI ADMIN]:
+File Target: ${targetFile}
+Instruksi Rewrite: ${instruction}
+
+Kutipan Isi File Sumber Saat Ini:
+\`\`\`
+${readResult.content}
+\`\`\`
+
+TUGASMU:
+Lakukan rewrite atau perbaikan pada file di atas sesuai instruksi Admin.
+Gunakan tag <replace_in_file path="${targetFile}"> untuk mengganti potongan kode yang ditargetkan secara presisi, ATAU tag <write_file path="${targetFile}"> jika menulis ulang seluruh file.
+Pastikan kode hasil perbaikan memiliki sintaks yang valid, aman, dan siap jalan.`;
+
+    const messages = [
+        { role: "system", content: systemPrompt },
+        { role: "user", content: userPrompt }
+    ];
+
+    try {
+        const rewriteResult = await AutonomousToolService.runAutonomousLoop({
+            messages,
+            askAiFn: (msgs) => AiService.askWithFallback(msgs, 0.1, CONFIG.LIMITS.MAX_TOKENS_GEN, hermesAgent.preferredModel),
+            onProgress: async (progressText) => {
+                try {
+                    await ctx.sendChatAction("typing");
+                    await TelegramPresenter.reply(ctx, progressText);
+                } catch (e) {
+                    Logger.warn("Rewrite progress notification error:", e.message);
+                }
+            },
+            maxIterations: 4
+        });
+
+        const finalReport = TextSanitizer.sanitizeOutput(AutonomousToolService.cleanToolTags(rewriteResult)) || "Proses rewrite selesai tanpa laporan teks.";
+        await TelegramPresenter.reply(ctx, `✅ *Laporan Selesai Rewrite Kode (Hermes Agent):*\n\n${finalReport}`);
+    } catch (err) {
+        Logger.error("Error during /rewrite:", err.message);
+        await TelegramPresenter.reply(ctx, `❌ Terjadi kendala saat proses rewrite: ${err.message}`);
+    }
 });
 
 bot.command("ocr", async (ctx) => {

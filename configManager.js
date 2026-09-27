@@ -7,6 +7,7 @@ const defaultConfig = {
     primaryModel: process.env.MODEL || "nex-agi/nex-n2.5-pro:free",
     modelChain: [
         process.env.MODEL || "nex-agi/nex-n2.5-pro:free",
+        "nousresearch/hermes-3-llama-3.1-70b",
         "inclusionai/ling-3.0-flash-vl:free",
         "dots-studio/dots-3-note-preview:free",
         "nex-agi/nex-n2.5-mini:free",

@@ -21,6 +21,7 @@ const { AutonomousToolService } = require("./autonomousToolService");
 
 
 const chatAgent = require("./agents/chat");
+const hermesAgent = require("./agents/hermes");
 const codingAgent = require("./agents/coding");
 const researchAgent = require("./agents/research");
 const devopsAgent = require("./agents/devops");
@@ -279,6 +280,10 @@ class AiService {
             patterns: [/\b(code|coding|bug|error|script)\b/i, /\b(react|nextjs|javascript|typescript|express|node)\b/i, /\b(api|function|html|css|excel|xlsx)\b/i]
         },
         {
+            agent: hermesAgent,
+            patterns: [/\b(hermes|reasoning|deep think|logika mendalam|akar masalah|analisis mendalam|otonom)\b/i]
+        },
+        {
             agent: researchAgent,
             patterns: [/\b(jurnal|paper|penelitian|research)\b/i, /\b(arxiv|ieee|sinta|doi|springer|acm)\b/i]
         }
@@ -423,8 +428,45 @@ class AiService {
         return userText;
     }
 
-    static async askWithFallback(messages, temperature = 0.2, maxTokens = CONFIG.LIMITS.MAX_TOKENS_GEN) {
+    static async askWithFallback(messages, temperature = 0.2, maxTokens = CONFIG.LIMITS.MAX_TOKENS_GEN, preferredModel = null) {
         let lastError = null;
+        const openrouterKey = ConfigManager.getApiKey("OPENROUTER_API_KEY") || CONFIG.OPENROUTER_API_KEY;
+
+        // 0. Prioritaskan Preferred Model (misal: Nous Hermes 3 saat menggunakan Hermes Agent) jika OpenRouter API Key aktif
+        if (preferredModel && openrouterKey && !this.isModelOnCooldown(preferredModel)) {
+            try {
+                Logger.info(`Memanggil Preferred Model OpenRouter (${preferredModel})...`);
+                const response = await axios.post(
+                    CONFIG.OPENROUTER_URL,
+                    {
+                        model: preferredModel,
+                        messages,
+                        temperature,
+                        max_tokens: maxTokens
+                    },
+                    {
+                        headers: {
+                            Authorization: `Bearer ${openrouterKey}`,
+                            "HTTP-Referer": "https://github.com/Alqurtubi17/citcat",
+                            "X-Title": "CitCat Bot",
+                            "Content-Type": "application/json"
+                        },
+                        timeout: CONFIG.TIMEOUTS.OPENROUTER_MS
+                    }
+                );
+                const content = response.data?.choices?.[0]?.message?.content;
+                if (content !== undefined && content !== null) {
+                    Logger.info(`Preferred Model OpenRouter ${preferredModel} sukses merespons.`);
+                    this.markModelSuccess(preferredModel);
+                    return content;
+                }
+            } catch (err) {
+                lastError = err;
+                this.markModelFailed(preferredModel);
+                const errDetail = err.response?.data?.error?.message || err.message;
+                Logger.warn(`Preferred Model ${preferredModel} gagal (${err.response?.status || ''} ${errDetail}). Melanjutkan ke model fallback...`);
+            }
+        }
 
         // 1. Try Direct Google Gemini Official API First (Ultra-Fast 1-2s Response Engine)
         const geminiApiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
@@ -469,8 +511,6 @@ class AiService {
         for (const freeModel of defaultFreeModels) {
             if (!modelChain.includes(freeModel)) modelChain.push(freeModel);
         }
-
-        const openrouterKey = ConfigManager.getApiKey("OPENROUTER_API_KEY") || CONFIG.OPENROUTER_API_KEY;
 
         if (openrouterKey) {
             // Pisahkan model yang sedang "cooldown" (baru gagal <5 menit lalu) supaya tidak menunggu timeout berulang
@@ -598,29 +638,33 @@ function getMainMenuMarkup(chatId = null) {
 
     const rows = [
         [
+            Markup.button.callback("🧠 Hermes Agent", "MODE_HERMES"),
+            Markup.button.callback("💻 Koding Specialist", "MODE_CODING")
+        ],
+        [
             Markup.button.callback("🖼️ OCR Vision & Excel", "MODE_OCR"),
             Markup.button.callback("🎙️ Transkrip & PDF", "MODE_TRANSCRIBE")
         ],
         [
             Markup.button.callback("📚 Riset & Jurnal", "MODE_RESEARCH"),
-            Markup.button.callback("💻 Koding Specialist", "MODE_CODING")
+            Markup.button.callback("🛠️ DevOps & Linux", "MODE_DEVOPS")
         ],
         [
-            Markup.button.callback("🛠️ DevOps & Linux", "MODE_DEVOPS"),
-            Markup.button.callback("🤖 Atur Model AI", "SHOW_MODEL_SETTINGS")
+            Markup.button.callback("🤖 Atur Model AI", "SHOW_MODEL_SETTINGS"),
+            Markup.button.callback("🌐 Browser AI", "SHOW_BROWSER_ACCOUNTS")
         ]
     ];
 
-    const utilityRow = [
-        Markup.button.callback("🌐 Browser AI (Playwright)", "SHOW_BROWSER_ACCOUNTS")
-    ];
+    const utilityRow = [];
 
     // Hanya tampilkan tombol Admin jika user adalah Admin yang terotorisasi
     // (atau jika belum ada admin yang di-set sama sekali agar owner bisa mendaftar pertama kali).
     if (isAdmin || !isConfigured) {
         utilityRow.push(Markup.button.callback(isAdmin ? "🔑 Status Admin VM" : "🔐 Setup Admin VM", "SHOW_ADMIN_STATUS"));
     }
-    rows.push(utilityRow);
+    if (utilityRow.length > 0) {
+        rows.push(utilityRow);
+    }
 
     if (isAdmin) {
         rows.push([
@@ -640,15 +684,18 @@ function getMainMenuMarkup(chatId = null) {
 function getModelPresetKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("⚡ Gemma 4 (26B Free)", "SET_MODEL_gemma26"),
-            Markup.button.callback("💻 Qwen 3.8 (27B Free)", "SET_MODEL_qwen27")
+            Markup.button.callback("🧠 Hermes 3 (70B)", "SET_MODEL_hermes"),
+            Markup.button.callback("⚡ Gemma 4 (26B Free)", "SET_MODEL_gemma26")
         ],
         [
-            Markup.button.callback("🌟 Gemma 4 (31B Free)", "SET_MODEL_gemma31"),
-            Markup.button.callback("🚀 Nemotron 3.5 (Free)", "SET_MODEL_nemotron")
+            Markup.button.callback("💻 Qwen 3.8 (27B Free)", "SET_MODEL_qwen27"),
+            Markup.button.callback("🌟 Gemma 4 (31B Free)", "SET_MODEL_gemma31")
         ],
         [
-            Markup.button.callback("💎 Claude 3.5 Sonnet", "SET_MODEL_claude35"),
+            Markup.button.callback("🚀 Nemotron 3.5 (Free)", "SET_MODEL_nemotron"),
+            Markup.button.callback("💎 Claude 3.5 Sonnet", "SET_MODEL_claude35")
+        ],
+        [
             Markup.button.callback("🟢 GPT-4o", "SET_MODEL_gpt4o")
         ]
     ]);
@@ -713,6 +760,7 @@ async function registerTelegramCommandScopes(botInstance) {
         const publicCommands = [
             { command: "start", description: "Tampilkan menu utama & greeting" },
             { command: "myid", description: "Cek Telegram User ID Anda" },
+            { command: "hermes", description: "Hermes Autonomous Reasoning Agent (Nous Hermes 3)" },
             { command: "ocr", description: "OCR Foto/Dokumen ke Excel & PDF (Gemini Vision)" },
             { command: "transcribe", description: "Transkrip Voice/Audio/Video ke PDF (Gemini Pro)" },
             { command: "model", description: "Cek & ganti model AI aktif" },
@@ -1319,6 +1367,13 @@ bot.action("SHOW_MODEL_SETTINGS", async (ctx) => {
     await TelegramPresenter.reply(ctx, text, getModelPresetKeyboard());
 });
 
+bot.action("SET_MODEL_hermes", async (ctx) => {
+    ConfigManager.setPrimaryModel("nousresearch/hermes-3-llama-3.1-70b");
+    Logger.info("Model diganti ke: nousresearch/hermes-3-llama-3.1-70b");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `nousresearch/hermes-3-llama-3.1-70b` (Nous Hermes 3 Reasoning Engine)");
+});
+
 bot.action("SET_MODEL_gemma26", async (ctx) => {
     ConfigManager.setPrimaryModel("google/gemma-4-26b-a4b-it:free");
     Logger.info("Model diganti ke: google/gemma-4-26b-a4b-it:free");
@@ -1359,6 +1414,13 @@ bot.action("SET_MODEL_gpt4o", async (ctx) => {
     Logger.info("Model diganti ke: openai/gpt-4o");
     await ctx.answerCbQuery();
     await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `openai/gpt-4o`");
+});
+
+bot.action("MODE_HERMES", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    MemoryManager.setMode(chatId, "HERMES");
+    await ctx.answerCbQuery();
+    await TelegramPresenter.reply(ctx, "🧠 Mode diaktifkan: *Hermes Autonomous & Reasoning Agent (Nous Hermes 3)*\n\nSpesialis penalaran mendalam, analisis multi-langkah, logika pemecahan masalah kompleks, dan eksekusi tugas otonom. Silakan sampaikan instruksi Anda!");
 });
 
 bot.action("MODE_TRANSCRIBE", async (ctx) => {
@@ -1426,6 +1488,12 @@ bot.command("transcribe", async (ctx) => {
     await TelegramPresenter.reply(ctx,
         "🎙️ Mode diaktifkan: *CitCat Transcribe Agent (Google Gemini Pro)*\n\nKirimkan file Voice Note, Audio (MP3/WAV/OGG), atau Video (MP4) langsung ke chat ini. Bot akan otomatis membuatkan **Transkrip Lengkap PDF** & **Rangkuman Inti PDF**!"
     );
+});
+
+bot.command("hermes", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    MemoryManager.setMode(chatId, "HERMES");
+    await TelegramPresenter.reply(ctx, "🧠 Mode diaktifkan: *Hermes Autonomous & Reasoning Agent (Nous Hermes 3)*\n\nSpesialis penalaran mendalam, analisis multi-langkah, logika pemecahan masalah kompleks, dan eksekusi tugas otonom. Silakan sampaikan instruksi Anda!");
 });
 
 bot.command("coding", async (ctx) => {
@@ -1912,7 +1980,7 @@ bot.on("text", async (ctx) => {
         const isIdentityQuery = /^(kamu siapa|siapa kamu|siapa anda|anda siapa|siapa dirimu|apa nama bot|siapa pembuatmu|siapa namamu|siapa kamu\?|kamu siapa\?)$/i.test(userText.trim());
 
         if (isIdentityQuery) {
-            const identityReply = "Saya adalah *CitCat Production AI Agent*, asisten cerdas berbasis **Google Gemini & Vision**.\n\nSetiap agent saya (OCR, Transkrip, Riset, Koding, DevOps) telah **terintegrasi langsung dengan Uteke Local-First Memory Engine**, sehingga semua informasi/ingatan penting Anda tersimpan secara otomatis dan diingat oleh seluruh spesialis!\n\n**Spesialisasi Agent:**\n• 🖼️ **OCR Vision & Exporter Excel (.xlsx)**\n• 🎙️ **Transkrip Voice/Audio/Video ke PDF**\n• 📚 **Riset & Jurnal Akademik (ARS Copilot)**\n• 💻 **Koding Fullstack Specialist**\n• 🛠️ **DevOps & Server Specialist**\n\nAda yang bisa saya bantu hari ini?";
+            const identityReply = "Saya adalah *CitCat Production AI Agent*, asisten cerdas berbasis **Google Gemini & Nous Hermes 3**.\n\nSetiap agent saya (Hermes, OCR, Transkrip, Riset, Koding, DevOps) telah **terintegrasi langsung dengan Uteke Local-First Memory Engine**, sehingga semua informasi/ingatan penting Anda tersimpan secara otomatis dan diingat oleh seluruh spesialis!\n\n**Spesialisasi Agent:**\n• 🧠 **Hermes Autonomous & Deep Reasoning (Nous Hermes 3)**\n• 🖼️ **OCR Vision & Exporter Excel (.xlsx)**\n• 🎙️ **Transkrip Voice/Audio/Video ke PDF**\n• 📚 **Riset & Jurnal Akademik (ARS Copilot)**\n• 💻 **Koding Fullstack Specialist**\n• 🛠️ **DevOps & Server Specialist**\n\nAda yang bisa saya bantu hari ini?";
             MemoryManager.addMessagePair(chatId, userText, identityReply);
             await TelegramPresenter.reply(ctx, identityReply);
             return;
@@ -1922,7 +1990,8 @@ bot.on("text", async (ctx) => {
 
         let activeAgent = chatAgent;
         if (!isCasualChat) {
-            if (userMode === "CODING") activeAgent = codingAgent;
+            if (userMode === "HERMES") activeAgent = hermesAgent;
+            else if (userMode === "CODING") activeAgent = codingAgent;
             else if (userMode === "RESEARCH") activeAgent = researchAgent;
             else if (userMode === "DEVOPS") activeAgent = devopsAgent;
             else if (userMode === "TRANSCRIBE") activeAgent = transcribeAgent;
@@ -2076,7 +2145,7 @@ bot.on("text", async (ctx) => {
         if (isAdmin) {
             rawAnswer = await AutonomousToolService.runAutonomousLoop({
                 messages,
-                askAiFn: (msgs) => AiService.askWithFallback(msgs, 0.2),
+                askAiFn: (msgs) => AiService.askWithFallback(msgs, 0.2, CONFIG.LIMITS.MAX_TOKENS_GEN, activeAgent.preferredModel),
                 onProgress: async (progressText) => {
                     toolsWereExecuted = true;
                     try {
@@ -2089,7 +2158,7 @@ bot.on("text", async (ctx) => {
                 maxIterations: 3
             });
         } else {
-            rawAnswer = await AiService.askWithFallback(messages, 0.2);
+            rawAnswer = await AiService.askWithFallback(messages, 0.2, CONFIG.LIMITS.MAX_TOKENS_GEN, activeAgent.preferredModel);
         }
 
         let finalAnswer = TextSanitizer.sanitizeOutput(AutonomousToolService.cleanToolTags(rawAnswer));
@@ -2101,7 +2170,7 @@ bot.on("text", async (ctx) => {
                 ...chatHistory,
                 { role: "user", content: userText }
             ];
-            rawAnswer = await AiService.askWithFallback(fallbackMessages, 0.2);
+            rawAnswer = await AiService.askWithFallback(fallbackMessages, 0.2, CONFIG.LIMITS.MAX_TOKENS_GEN, activeAgent.preferredModel);
             finalAnswer = TextSanitizer.sanitizeOutput(AutonomousToolService.cleanToolTags(rawAnswer));
         }
 

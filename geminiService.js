@@ -94,7 +94,7 @@ async function askGeminiDirect(messages, temperature = 0.2, modelName = "gemini-
                     payload,
                     {
                         headers: { "Content-Type": "application/json" },
-                        timeout: 8000
+                        timeout: 45000
                     }
                 );
 

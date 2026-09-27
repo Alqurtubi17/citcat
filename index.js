@@ -2313,7 +2313,13 @@ bot.on("text", async (ctx) => {
     }
 })();
 
-Logger.info(`CitCat Production System Active (Automatic Webhook Reset & Polling Auto-Recovery Engine Active)`);
+process.on("unhandledRejection", (reason, promise) => {
+    Logger.error("Unhandled Rejection:", reason?.stack || reason);
+});
+
+process.on("uncaughtException", (err) => {
+    Logger.error("Uncaught Exception:", err?.stack || err);
+});
 
 process.once("SIGINT", () => bot.stop("SIGINT"));
 process.once("SIGTERM", () => bot.stop("SIGTERM"));

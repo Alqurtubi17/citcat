@@ -4,12 +4,14 @@ const path = require("path");
 const CONFIG_PATH = path.join(__dirname, "config.json");
 
 const defaultConfig = {
-    primaryModel: process.env.MODEL || "meta-llama/llama-3.3-70b-instruct:free",
+    primaryModel: process.env.MODEL || "nex-agi/nex-n2.5-pro:free",
     modelChain: [
-        process.env.MODEL || "meta-llama/llama-3.3-70b-instruct:free",
-        "google/gemma-2-9b-it:free",
-        "qwen/qwen-2.5-coder-32b-instruct:free",
-        "deepseek/deepseek-r1-distill-llama-70b:free"
+        process.env.MODEL || "nex-agi/nex-n2.5-pro:free",
+        "inclusionai/ling-3.0-flash-vl:free",
+        "dots-studio/dots-3-note-preview:free",
+        "nex-agi/nex-n2.5-mini:free",
+        "liquid/lfm-2.5-2.6b:free",
+        "cohere/north-mini-code:free"
     ],
     apiKeys: {
         OPENROUTER_API_KEY: process.env.OPENROUTER_API_KEY || "",
@@ -17,6 +19,26 @@ const defaultConfig = {
     },
     adminUserId: process.env.ADMIN_USER_ID || ""
 };
+
+const DEPRECATED_MODELS_MAP = {
+    "google/gemini-1.5-pro": "nex-agi/nex-n2.5-pro:free",
+    "google/gemini-pro-1.5": "nex-agi/nex-n2.5-pro:free",
+    "google/gemini-1.5-flash": "nex-agi/nex-n2.5-mini:free",
+    "google/gemini-flash-1.5": "nex-agi/nex-n2.5-mini:free",
+    "google/gemini-2.5-flash": "nex-agi/nex-n2.5-mini:free",
+    "meta-llama/llama-3.3-70b-instruct:free": "nex-agi/nex-n2.5-pro:free",
+    "google/gemma-2-9b-it:free": "nex-agi/nex-n2.5-pro:free",
+    "qwen/qwen-2.5-coder-32b-instruct:free": "cohere/north-mini-code:free",
+    "deepseek/deepseek-r1-distill-llama-70b:free": "nex-agi/nex-n2.5-pro:free",
+    "google/gemma-4-26b-a4b-it:free": "nex-agi/nex-n2.5-pro:free",
+    "qwen/qwen3.8-27b:free": "dots-studio/dots-3-note-preview:free",
+    "google/gemma-4-31b-it:free": "inclusionai/ling-3.0-flash-vl:free"
+};
+
+function sanitizeModelName(modelName) {
+    if (!modelName) return "nex-agi/nex-n2.5-pro:free";
+    return DEPRECATED_MODELS_MAP[modelName] || modelName;
+}
 
 class ConfigManager {
     // In-memory cache: config.json dibaca berulang kali per pesan (getPrimaryModel,
@@ -37,17 +59,14 @@ class ConfigManager {
                 const data = JSON.parse(fs.readFileSync(CONFIG_PATH, "utf8"));
 
                 let modified = false;
-                if (data.primaryModel === "google/gemini-1.5-pro" || data.primaryModel === "google/gemini-1.5-flash" || data.primaryModel === "google/gemini-pro-1.5") {
-                    data.primaryModel = "meta-llama/llama-3.3-70b-instruct:free";
+                const sanitizedPrimary = sanitizeModelName(data.primaryModel);
+                if (sanitizedPrimary !== data.primaryModel) {
+                    data.primaryModel = sanitizedPrimary;
                     modified = true;
                 }
 
                 if (Array.isArray(data.modelChain)) {
-                    const newChain = data.modelChain.map(m => {
-                        if (m === "google/gemini-1.5-pro" || m === "google/gemini-pro-1.5") return "meta-llama/llama-3.3-70b-instruct:free";
-                        if (m === "google/gemini-1.5-flash" || m === "google/gemini-flash-1.5") return "google/gemma-2-9b-it:free";
-                        return m;
-                    });
+                    const newChain = data.modelChain.map(m => sanitizeModelName(m));
                     if (JSON.stringify(newChain) !== JSON.stringify(data.modelChain)) {
                         data.modelChain = newChain;
                         modified = true;
@@ -131,6 +150,11 @@ class ConfigManager {
         const normalizedKey = keyName.toUpperCase();
         const cfg = this.loadConfig();
         return cfg.apiKeys?.[normalizedKey] || process.env[normalizedKey] || "";
+    }
+
+    static getGeminiApiKeys() {
+        const raw = this.getApiKey("GEMINI_API_KEYS") || this.getApiKey("GEMINI_API_KEY") || this.getApiKey("GOOGLE_API_KEY") || "";
+        return raw.split(/[\s,]+/).map(k => k.trim()).filter(Boolean);
     }
 
     static getAdminUserId() {

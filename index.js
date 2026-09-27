@@ -16,6 +16,8 @@ const { processImageOcr } = require("./ocrService");
 const { askGeminiDirect } = require("./geminiService");
 const { BROWSER_SERVICES, saveBrowserAccount, listBrowserAccounts, removeBrowserAccount, askViaBrowser, closeAllBrowserSessions } = require("./playwrightService");
 const { TerminalService } = require("./terminalService");
+const { HermesSelfHealing } = require("./hermesSelfHealingService");
+const { AutonomousToolService } = require("./autonomousToolService");
 
 
 const chatAgent = require("./agents/chat");
@@ -107,6 +109,16 @@ class TextSanitizer {
             .replace(/<think>[\s\S]*?<\/think>/gi, "")
             .replace(/<br\s*\/?>/gi, "\n")
             .replace(/<[^>]*>?/gm, "")
+            // Mencegah Prompt Leakage: hapus tag context/memory jika model mengulanginya
+            .replace(/\[?INGATAN JANGKA PANJANG UTEKE(?:\s*\(.*?\))?\]?:?\s*/gi, "")
+            .replace(/\[?MEMORI JANGKA PANJANG(?:\s*\(.*?\))?\]?:?\s*/gi, "")
+            .replace(/\[?KOREKSI USER SEBELUMNYA(?:\s*\(.*?\))?\]?:?\s*/gi, "")
+            .replace(/\[?WAKTU REAL-TIME SEKARANG.*?\]:?\s*/gi, "")
+            .replace(/\[?INFORMASI SERVING VM REAL-TIME.*?\]:?\s*/gi, "")
+            .replace(/\[?HASIL PENCARIAN & SCRAPING WEB REAL-TIME.*?\]:?\s*/gi, "")
+            .replace(/\[?HASIL PENCARIAN WEB RISET AKADEMIK.*?\]:?\s*/gi, "")
+            .replace(/\[?DOKUMEN TERLAMPIR.*?\]:?\s*/gi, "")
+            .replace(/\[?PERTANYAAN USER\]?:?\s*/gi, "")
             .replace(/^#{1,6}\s+(.+)$/gm, "*$1*")        // Convert Markdown headers (#, ##, ###) to Telegram bold (*Header*)
             .replace(/[\u0300-\u036f]/g, "")             // Remove combining diacritical marks
             .replace(/[\u10A0-\u10FF]/g, "")             // Remove Georgian alphabet
@@ -162,7 +174,32 @@ class TextSanitizer {
     }
 }
 
+const BLOCKED_SCRAPE_DOMAINS = [
+    "instagram.com",
+    "facebook.com",
+    "fb.com",
+    "twitter.com",
+    "x.com",
+    "tiktok.com",
+    "linkedin.com",
+    "threads.net",
+    "pinterest.com",
+    "t.me",
+    "telegram.me"
+];
+
 class DocumentService {
+    static isRestrictedDomain(url) {
+        if (!url || typeof url !== "string") return true;
+        try {
+            const parsed = new URL(url);
+            const host = parsed.hostname.toLowerCase();
+            return BLOCKED_SCRAPE_DOMAINS.some(d => host === d || host.endsWith("." + d));
+        } catch {
+            return true;
+        }
+    }
+
     static extractUrls(text) {
         if (!text) return [];
         const matches = text.match(/https?:\/\/\S+/gi);
@@ -170,14 +207,31 @@ class DocumentService {
     }
 
     static async fetchUrlContent(url) {
+        if (!url || typeof url !== "string") return null;
+
+        if (this.isRestrictedDomain(url)) {
+            Logger.warn(`[Scraper] Melewati domain terproteksi / anti-bot crawler: ${url}`);
+            return null;
+        }
+
         try {
             Logger.info(`Fetching document/URL: ${url}`);
             const isPdf = url.toLowerCase().includes(".pdf");
             const response = await axios.get(url, {
                 timeout: CONFIG.TIMEOUTS.FETCH_MS,
                 responseType: isPdf ? "arraybuffer" : "text",
-                headers: { "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)" }
+                headers: {
+                    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36 CitCatBot/1.0",
+                    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8"
+                },
+                // validateStatus: () => true mencegah Axios melempar unhandled exception saat status 404, 403, 500 dll
+                validateStatus: () => true
             });
+
+            if (!response || response.status < 200 || response.status >= 300 || !response.data) {
+                Logger.warn(`[Scraper] URL ${url} mengembalikan status ${response?.status || 'gagal'}, dilewati.`);
+                return null;
+            }
 
             if (isPdf || Buffer.isBuffer(response.data)) {
                 const pdfBuffer = Buffer.from(response.data);
@@ -340,8 +394,8 @@ class AiService {
             return false;
         }
 
-        // Use word boundary regex for short keywords to prevent false matches (e.g. "starlink" matching "link")
-        const searchKeywordsRegex = /\b(carikan|cari|jurnal|paper|sinta|berita|terbaru|hari ini|dimana|kapan|mengapa|kenapa|berapa|presiden|juara|pildun|piala dunia|harga|skor|klasemen|update|2026|2025|link|url|situs|artikel|sumber|rektor|rektornya|hasil|jadwal)\b/i;
+        // Use word boundary regex for actual real-time/lookup keywords to avoid false matches
+        const searchKeywordsRegex = /\b(carikan|cari|jurnal|paper|sinta|berita|terkini|terbaru|hari ini|cuaca|gempa|kurs|saham|klasemen|juara pildun|jadwal sholat|jadwal bola)\b/i;
 
         return searchKeywordsRegex.test(lower);
     }
@@ -357,9 +411,10 @@ class AiService {
         if (lastUserMsgs.length === 0) return userText;
 
         const lastMsg = lastUserMsgs[lastUserMsgs.length - 1];
-        const isFollowUp = userText.length < 35 || /\b(siapa|berapa|mana|apa|rekot|rektor|rektornya|juara|juaranya|harganya|linknya|pdfnya|itu|ini)\b/i.test(userText);
+        // Only combine if user is clearly referring to the previous context with pronouns
+        const isFollowUp = /\b(yang tadi|itu|tersebut|dia|mereka|lanjutkan|linknya|pdfnya|detailnya|sumbernya)\b/i.test(userText.trim());
 
-        if (isFollowUp) {
+        if (isFollowUp && lastMsg) {
             const combined = `${lastMsg} ${userText}`.replace(/[?\!.,]/g, " ").trim();
             Logger.info(`Context-Aware Search Query constructed: "${combined}"`);
             return combined;
@@ -371,44 +426,45 @@ class AiService {
     static async askWithFallback(messages, temperature = 0.2, maxTokens = CONFIG.LIMITS.MAX_TOKENS_GEN) {
         let lastError = null;
 
-        // 1. Try Direct Google Gemini Flash Official API First (Ultra-Fast 1-2s Response Engine)
+        // 1. Try Direct Google Gemini Official API First (Ultra-Fast 1-2s Response Engine)
         const geminiApiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
         if (geminiApiKey) {
             try {
-                Logger.info("Memanggil Google Gemini Flash Direct API (gemini-flash-latest, Ultra-Fast Engine)...");
-                // CATATAN: model "gemini-1.5-flash/pro" sudah dimatikan permanen oleh Google
-                // (selalu mengembalikan 404). Gunakan alias resmi auto-update dari Google:
-                // "gemini-flash-latest" & "gemini-pro-latest" -- otomatis mengikuti model
-                // stabil terbaru tanpa perlu diganti manual tiap kali Google merilis versi baru.
-                const geminiFlashReply = await askGeminiDirect(messages, temperature, "gemini-flash-latest", maxTokens);
-                if (geminiFlashReply) return geminiFlashReply;
+                Logger.info("Memanggil Google Gemini Direct API (Ultra-Fast Auto-Fallback Engine)...");
+                const geminiReply = await askGeminiDirect(messages, temperature, "gemini-flash-latest", maxTokens);
+                if (geminiReply) return geminiReply;
             } catch (err) {
                 lastError = err;
-                Logger.warn(`Google Gemini Flash Direct API error (${err.message}). Mencoba Gemini Pro...`);
-                try {
-                    const geminiProReply = await askGeminiDirect(messages, temperature, "gemini-pro-latest", maxTokens);
-                    if (geminiProReply) return geminiProReply;
-                } catch (proErr) {
-                    Logger.warn(`Google Gemini Pro Direct API error (${proErr.message}). Melanjutkan ke OpenRouter Model Chain...`);
-                }
+                Logger.warn(`Google Gemini Direct API gagal (${err.response?.status || err.message}). Melanjutkan ke OpenRouter Model Chain...`);
             }
         }
 
         // 2. OpenRouter Model Chain Fallback
-        let modelChain = ConfigManager.getModelChain();
+        const OPENROUTER_DEPRECATED_MAP = {
+            "google/gemini-1.5-pro": "nex-agi/nex-n2.5-pro:free",
+            "google/gemini-pro-1.5": "nex-agi/nex-n2.5-pro:free",
+            "google/gemini-1.5-flash": "nex-agi/nex-n2.5-mini:free",
+            "google/gemini-flash-1.5": "nex-agi/nex-n2.5-mini:free",
+            "google/gemini-2.5-flash": "nex-agi/nex-n2.5-mini:free",
+            "meta-llama/llama-3.3-70b-instruct:free": "nex-agi/nex-n2.5-pro:free",
+            "google/gemma-2-9b-it:free": "nex-agi/nex-n2.5-pro:free",
+            "qwen/qwen-2.5-coder-32b-instruct:free": "cohere/north-mini-code:free",
+            "deepseek/deepseek-r1-distill-llama-70b:free": "nex-agi/nex-n2.5-pro:free",
+            "google/gemma-4-26b-a4b-it:free": "nex-agi/nex-n2.5-pro:free",
+            "qwen/qwen3.8-27b:free": "dots-studio/dots-3-note-preview:free",
+            "google/gemma-4-31b-it:free": "inclusionai/ling-3.0-flash-vl:free"
+        };
 
-        // Ensure invalid legacy model names inside modelChain are sanitized to valid active OpenRouter models
-        modelChain = modelChain.map(m => {
-            if (m === "google/gemini-1.5-pro" || m === "google/gemini-pro-1.5") return "meta-llama/llama-3.3-70b-instruct:free";
-            if (m === "google/gemini-1.5-flash" || m === "google/gemini-flash-1.5") return "google/gemma-2-9b-it:free";
-            return m;
-        });
+        let modelChain = ConfigManager.getModelChain().map(m => OPENROUTER_DEPRECATED_MAP[m] || m);
 
-        // Add guaranteed free active models if not already in chain
+        // Add guaranteed active free models if not already in chain
         const defaultFreeModels = [
-            "meta-llama/llama-3.3-70b-instruct:free",
-            "google/gemma-2-9b-it:free",
-            "qwen/qwen-2.5-coder-32b-instruct:free"
+            "nex-agi/nex-n2.5-pro:free",
+            "inclusionai/ling-3.0-flash-vl:free",
+            "dots-studio/dots-3-note-preview:free",
+            "nex-agi/nex-n2.5-mini:free",
+            "liquid/lfm-2.5-2.6b:free",
+            "cohere/north-mini-code:free"
         ];
         for (const freeModel of defaultFreeModels) {
             if (!modelChain.includes(freeModel)) modelChain.push(freeModel);
@@ -416,57 +472,74 @@ class AiService {
 
         const openrouterKey = ConfigManager.getApiKey("OPENROUTER_API_KEY") || CONFIG.OPENROUTER_API_KEY;
 
-        // Pisahkan model yang sedang "cooldown" (baru gagal <5 menit lalu) supaya
-        // tidak menunggu timeout yang sama berulang -> respons jauh lebih cepat.
-        const readyModels = modelChain.filter(m => !this.isModelOnCooldown(m));
-        const cooldownModels = modelChain.filter(m => this.isModelOnCooldown(m));
-        const orderedChain = [...readyModels, ...cooldownModels]; // fallback tetap coba yang cooldown jika semua ready gagal
+        if (openrouterKey) {
+            // Pisahkan model yang sedang "cooldown" (baru gagal <5 menit lalu) supaya tidak menunggu timeout berulang
+            const readyModels = modelChain.filter(m => !this.isModelOnCooldown(m));
+            const cooldownModels = modelChain.filter(m => this.isModelOnCooldown(m));
+            const orderedChain = [...readyModels, ...cooldownModels];
 
-        for (const model of orderedChain) {
-            try {
-                const payload = {
-                    model,
-                    messages,
-                    temperature,
-                    max_tokens: maxTokens
-                };
+            for (const model of orderedChain) {
+                try {
+                    const payload = {
+                        model,
+                        messages,
+                        temperature,
+                        max_tokens: maxTokens
+                    };
 
-                const response = await axios.post(
-                    CONFIG.OPENROUTER_URL,
-                    payload,
-                    {
-                        headers: {
-                            Authorization: `Bearer ${openrouterKey}`,
-                            "HTTP-Referer": "https://github.com/Alqurtubi17/citcat",
-                            "X-Title": "CitCat Bot",
-                            "Content-Type": "application/json"
-                        },
-                        timeout: CONFIG.TIMEOUTS.OPENROUTER_MS
+                    const response = await axios.post(
+                        CONFIG.OPENROUTER_URL,
+                        payload,
+                        {
+                            headers: {
+                                Authorization: `Bearer ${openrouterKey}`,
+                                "HTTP-Referer": "https://github.com/Alqurtubi17/citcat",
+                                "X-Title": "CitCat Bot",
+                                "Content-Type": "application/json"
+                            },
+                            timeout: CONFIG.TIMEOUTS.OPENROUTER_MS
+                        }
+                    );
+
+                    const content = response.data?.choices?.[0]?.message?.content;
+                    if (content !== undefined && content !== null) {
+                        Logger.info(`Model OpenRouter ${model} sukses merespons.`);
+                        this.markModelSuccess(model);
+                        return content;
                     }
-                );
-
-                const content = response.data?.choices?.[0]?.message?.content;
-                if (content !== undefined && content !== null) {
-                    Logger.info(`Model ${model} sukses merespons.`);
-                    this.markModelSuccess(model);
-                    return content;
+                } catch (err) {
+                    lastError = err;
+                    this.markModelFailed(model);
+                    const errDetail = err.response?.data?.error?.message || err.message;
+                    Logger.warn(`Model OpenRouter ${model} gagal (${err.response?.status || ''} ${errDetail}). Mencoba model berikutnya...`);
                 }
-            } catch (err) {
-                lastError = err;
-                this.markModelFailed(model);
-                const errDetail = err.response?.data?.error?.message || err.message;
-                Logger.warn(`Model ${model} timeout/failed (${errDetail}). Mencoba model berikutnya...`);
             }
         }
 
         if (lastError) {
-            const errStr = String(lastError?.response?.data?.error?.message || lastError?.message || "");
-            if (errStr.includes("404") || errStr.includes("API key not valid") || errStr.includes("401") || errStr.includes("status code 404")) {
-                return "⚠️ *Kunci API Key Tidak Valid atau Belum Dikonfigurasi!*\n\nKunci `GEMINI_API_KEY` yang Anda masukkan tidak valid untuk Google AI Studio Endpoint. Kunci Google AI Studio yang valid **selalu diawali dengan \`AIzaSy...\`**.\n\n**Cara Cepat Mendapatkan API Key Resmi:**\n1. Buka situs gratis resmi Google: https://aistudio.google.com/app/apikey\n2. Klik **Create API Key**\n3. Salin kuncinya yang berawalan `AIzaSy...`\n4. Tempel di Telegram ini dengan ketik:\n`/setkey AIzaSy...`\n\n*(Atau gunakan OpenRouter Key dengan: \`/setkey OPENROUTER_API_KEY sk-or-v1-...\`)*";
+            const status = lastError.response?.status;
+            const errData = lastError.response?.data?.error;
+            const errDetail = typeof errData === "object" ? (errData.message || JSON.stringify(errData)) : String(errData || lastError.message || "");
+            const combinedErr = `${status || ''} ${errDetail} ${lastError.message}`.toLowerCase();
+
+            Logger.error("Seluruh model AI gagal merespons. Detail:", { status, errDetail, message: lastError.message });
+
+            if (status === 404 || combinedErr.includes("404") || combinedErr.includes("not found") || combinedErr.includes("no endpoints found")) {
+                return "⚠️ *Model / Endpoint Tidak Ditemukan (404)*\n\nModel AI yang dituju saat ini sedang dinonaktifkan atau dalam transisi versi oleh penyedia layanan. Bot telah otomatis menyesuaikan model cadangan.\n\nUntuk memastikan akses stabil tanpa kendala, pasang Google Gemini API Key gratis Anda:\n1. Kunjungi: https://aistudio.google.com/app/apikey\n2. Klik **Create API Key** (salin yang berawalan `AIzaSy...`)\n3. Ketik di Telegram ini:\n`/setkey GEMINI_API_KEY <api_key_anda>`";
             }
+
+            if (status === 401 || status === 400 || combinedErr.includes("api key not valid") || combinedErr.includes("authentication") || combinedErr.includes("401")) {
+                return "⚠️ *Kunci API Key Tidak Valid atau Belum Dikonfigurasi!*\n\nKunci API Key Anda belum disetel atau tidak dikenali oleh penyedia AI.\n\n**Cara Cepat Mendapatkan Kunci Resmi Gratis:**\n1. Buka situs Google: https://aistudio.google.com/app/apikey\n2. Klik **Create API Key**\n3. Ketik di Telegram ini:\n`/setkey GEMINI_API_KEY AIzaSy...`";
+            }
+
+            if (status === 429 || combinedErr.includes("quota") || combinedErr.includes("rate limit") || combinedErr.includes("429")) {
+                return "⚠️ *Batas Kuota / Rate Limit Tercapai (429)*\n\nLayanan model AI gratis saat ini sedang padat. Silakan tunggu sekitar 20-30 detik lalu ajukan kembali pertanyaan Anda.";
+            }
+
+            return `⚠️ *Kendala Layanan AI*\n\n${errDetail || lastError.message}\n\nSilakan coba beberapa saat lagi atau periksa kunci API Anda via \`/status\`.`;
         }
 
-        throw lastError || new Error("Semua model (Google Gemini Pro & OpenRouter Chain) gagal merespons.");
+        return "⚠️ Tidak ada model AI yang aktif merespons saat ini. Pastikan kunci API sudah disetel via `/setkey GEMINI_API_KEY <kunci_anda>`.";
     }
 }
 
@@ -549,12 +622,16 @@ function getMainMenuMarkup(chatId = null) {
     }
     rows.push(utilityRow);
 
+    if (isAdmin) {
+        rows.push([
+            Markup.button.callback("🩺 Hermes Self-Healing", "SHOW_SELFHEALING"),
+            Markup.button.callback("📋 Cek Log Sistem", "SHOW_LOGS")
+        ]);
+    }
+
     const bottomRow = [
         Markup.button.callback("🧹 Reset Memori", "RESET_MEMORY")
     ];
-    if (isAdmin) {
-        bottomRow.unshift(Markup.button.callback("📋 Cek Log Sistem", "SHOW_LOGS"));
-    }
     rows.push(bottomRow);
 
     return Markup.inlineKeyboard(rows);
@@ -563,12 +640,12 @@ function getMainMenuMarkup(chatId = null) {
 function getModelPresetKeyboard() {
     return Markup.inlineKeyboard([
         [
-            Markup.button.callback("✨ Gemini 2.5 Flash (OpenRouter)", "SET_MODEL_gemini_pro"),
-            Markup.button.callback("🦙 Llama 3.3 (70B)", "SET_MODEL_llama70")
+            Markup.button.callback("⚡ Gemma 4 (26B Free)", "SET_MODEL_gemma26"),
+            Markup.button.callback("💻 Qwen 3.8 (27B Free)", "SET_MODEL_qwen27")
         ],
         [
-            Markup.button.callback("💻 Qwen 2.5 Coder (32B)", "SET_MODEL_qwen32"),
-            Markup.button.callback("🔍 DeepSeek R1 (70B)", "SET_MODEL_deepseek70")
+            Markup.button.callback("🌟 Gemma 4 (31B Free)", "SET_MODEL_gemma31"),
+            Markup.button.callback("🚀 Nemotron 3.5 (Free)", "SET_MODEL_nemotron")
         ],
         [
             Markup.button.callback("💎 Claude 3.5 Sonnet", "SET_MODEL_claude35"),
@@ -593,8 +670,42 @@ if (!CONFIG.TELEGRAM_TOKEN) {
 
 const bot = new Telegraf(CONFIG.TELEGRAM_TOKEN, { handlerTimeout: 600000 });
 
-bot.catch((err, ctx) => {
+async function notifyAdminSelfHealingPatch(botInstance, adminChatId, patch) {
+    if (!adminChatId || !patch || !patch.patchId) return;
+    const msg = `🩺 *[Hermes Self-Healing] Usulan Perbaikan Bug Otomatis*\n\n` +
+        `• *ID Patch:* \`${patch.patchId}\`\n` +
+        `• *File Target:* \`${patch.fileName || "unknown"}\` (Baris ${patch.errorLine || "?"})\n` +
+        `• *Penyebab:* ${patch.errorMessage || "Unknown Error"}\n` +
+        `• *Diagnosa Hermes:* ${patch.explanation}\n\n` +
+        `*Review Usulan Diff:*\n\`\`\`diff\n${(patch.diffText || "Tidak ada diff visual").substring(0, 1500)}\n\`\`\`\n\n` +
+        `_Apakah Anda ingin menerapkan perbaikan ini secara otomatis? (Telah diverifikasi via node --check & backup otomatis dibuat di .backups/)_`;
+
+    const keyboard = Markup.inlineKeyboard([
+        [
+            Markup.button.callback("✅ Terapkan Patch", `APPLY_PATCH_${patch.patchId}`),
+            Markup.button.callback("❌ Tolak Perbaikan", `REJECT_PATCH_${patch.patchId}`)
+        ]
+    ]);
+
+    try {
+        await botInstance.telegram.sendMessage(adminChatId, msg, { parse_mode: "Markdown", ...keyboard });
+    } catch (e) {
+        Logger.warn("Gagal mengirim notifikasi Hermes Self-Healing ke admin:", e.message);
+    }
+}
+
+bot.catch(async (err, ctx) => {
     Logger.error(`Telegraf Catch Error (${ctx?.updateType || "unknown"}):`, err.message);
+    const adminUserId = ConfigManager.getAdminUserId();
+    if (adminUserId) {
+        HermesSelfHealing.diagnoseAndProposeFix(err, { updateType: ctx?.updateType })
+            .then(patch => {
+                if (patch && patch.success) {
+                    notifyAdminSelfHealingPatch(bot, adminUserId, patch);
+                }
+            })
+            .catch(e => Logger.warn("Hermes Self-Healing error in bot.catch:", e.message));
+    }
 });
 
 async function registerTelegramCommandScopes(botInstance) {
@@ -619,6 +730,7 @@ async function registerTelegramCommandScopes(botInstance) {
 
         const adminCommands = [
             ...publicCommands,
+            { command: "selfhealing", description: "Status & perbaikan otomatis Hermes Agent" },
             { command: "cmd", description: "Eksekusi perintah terminal VM (/cmd <perintah>)" },
             { command: "setadmin", description: "Set Admin VM (/setadmin <user_id>)" },
             { command: "setkey", description: "Set API Key (/setkey <KEY> <VALUE>)" },
@@ -669,6 +781,55 @@ bot.command(["logs", "log"], async (ctx) => {
 bot.command("clearlogs", async (ctx) => {
     Logger.clearLogs();
     await TelegramPresenter.reply(ctx, "🧹 *Log sistem berhasil dibersihkan!*");
+});
+
+// HERMES AUTONOMOUS SELF-HEALING COMMAND
+bot.command(["selfhealing", "heal"], async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    if (!TerminalService.isAuthorizedAdmin(chatId)) {
+        await TelegramPresenter.reply(ctx, "⛔ Akses ditolak. Fitur Hermes Self-Healing hanya dapat diakses oleh Admin terotorisasi.");
+        return;
+    }
+
+    const pendingPatches = HermesSelfHealing.getAllPendingPatches();
+    const backups = HermesSelfHealing.listBackups(5);
+
+    let text = `🩺 *Hermes Autonomous Self-Healing Engine*\n\n` +
+        `• *Status:* 🟢 Aktif & Siaga\n` +
+        `• *Model Perbaikan:* \`nousresearch/hermes-3-llama-3.1-70b\` (Fallback: Gemini Flash)\n` +
+        `• *Keamanan:* Sandboxed Syntax Check (\`node --check\`) + Auto-Rollback + Timestamped Backup\n\n`;
+
+    if (pendingPatches.length > 0) {
+        text += `⚠️ *Ada ${pendingPatches.length} Usulan Patch Menunggu Persetujuan:*\n`;
+        for (const p of pendingPatches) {
+            text += `\n• *ID:* \`${p.id}\` | *File:* \`${p.fileName}:${p.errorLine}\`\n  ${p.explanation}\n`;
+        }
+        text += `\nGunakan tombol di bawah pesan notifikasi usulan untuk menerapkan atau menolak.`;
+    } else {
+        text += `✨ *Tidak ada bug yang tertunda.* Sistem berjalan normal.\n\n`;
+    }
+
+    if (backups.length > 0) {
+        text += `💾 *Riwayat Backup Kode (.backups/):*\n`;
+        for (const b of backups) {
+            const timeStr = new Date(b.time).toLocaleString("id-ID");
+            text += `• \`${b.file}\` (${Math.round(b.size / 1024)} KB) — _${timeStr}_\n`;
+        }
+    } else {
+        text += `💾 *Direktori Backup:* \`.backups/\` (Belum ada file backup)`;
+    }
+
+    let inlineKeyboard = [];
+    if (pendingPatches.length > 0) {
+        for (const p of pendingPatches) {
+            inlineKeyboard.push([
+                Markup.button.callback(`✅ Terapkan ${p.id}`, `APPLY_PATCH_${p.id}`),
+                Markup.button.callback(`❌ Tolak ${p.id}`, `REJECT_PATCH_${p.id}`)
+            ]);
+        }
+    }
+
+    await TelegramPresenter.reply(ctx, text, inlineKeyboard.length > 0 ? Markup.inlineKeyboard(inlineKeyboard) : undefined);
 });
 
 // UTEKE MEMORY ENGINE COMMANDS
@@ -991,6 +1152,98 @@ bot.command("browserlist", async (ctx) => {
 });
 
 // CALLBACK BUTTON HANDLERS
+bot.action("SHOW_SELFHEALING", async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    if (!TerminalService.isAuthorizedAdmin(chatId)) {
+        await ctx.answerCbQuery("⛔ Akses ditolak. Hanya Admin terotorisasi.", { show_alert: true });
+        return;
+    }
+    await ctx.answerCbQuery();
+    const pendingPatches = HermesSelfHealing.getAllPendingPatches();
+    const backups = HermesSelfHealing.listBackups(5);
+
+    let text = `🩺 *Hermes Autonomous Self-Healing Engine*\n\n` +
+        `• *Status:* 🟢 Aktif & Siaga\n` +
+        `• *Model Perbaikan:* \`nousresearch/hermes-3-llama-3.1-70b\` (Fallback: Gemini Flash)\n` +
+        `• *Keamanan:* Sandboxed Syntax Check (\`node --check\`) + Auto-Rollback + Timestamped Backup\n\n`;
+
+    if (pendingPatches.length > 0) {
+        text += `⚠️ *Ada ${pendingPatches.length} Usulan Patch Menunggu Persetujuan:*\n`;
+        for (const p of pendingPatches) {
+            text += `\n• *ID:* \`${p.id}\` | *File:* \`${p.fileName}:${p.errorLine}\`\n  ${p.explanation}\n`;
+        }
+    } else {
+        text += `✨ *Tidak ada bug yang tertunda.* Sistem berjalan normal.\n\n`;
+    }
+
+    if (backups.length > 0) {
+        text += `💾 *Riwayat Backup Kode (.backups/):*\n`;
+        for (const b of backups) {
+            const timeStr = new Date(b.time).toLocaleString("id-ID");
+            text += `• \`${b.file}\` (${Math.round(b.size / 1024)} KB) — _${timeStr}_\n`;
+        }
+    }
+
+    let inlineKeyboard = [];
+    if (pendingPatches.length > 0) {
+        for (const p of pendingPatches) {
+            inlineKeyboard.push([
+                Markup.button.callback(`✅ Terapkan ${p.id}`, `APPLY_PATCH_${p.id}`),
+                Markup.button.callback(`❌ Tolak ${p.id}`, `REJECT_PATCH_${p.id}`)
+            ]);
+        }
+    }
+
+    await TelegramPresenter.reply(ctx, text, inlineKeyboard.length > 0 ? Markup.inlineKeyboard(inlineKeyboard) : undefined);
+});
+
+bot.action(/^APPLY_PATCH_(.+)$/, async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    if (!TerminalService.isAuthorizedAdmin(chatId)) {
+        await ctx.answerCbQuery("⛔ Akses ditolak. Hanya Admin terotorisasi.", { show_alert: true });
+        return;
+    }
+    const patchId = ctx.match[1];
+    await ctx.answerCbQuery("Menerapkan patch kode...");
+    try {
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    } catch {
+        // ignore
+    }
+
+    try {
+        const result = await HermesSelfHealing.applyPatch(patchId);
+        if (result && result.success) {
+            await TelegramPresenter.reply(
+                ctx,
+                `✅ *Patch Berhasil Diterapkan!*\n\n• *File:* \`${result.fileName}\`\n• *Backup:* \`${result.backupPath}\`\n• *Validasi Sintaks:* LULUS (\`node --check\` OK)\n\nSilakan restart bot jika diperlukan (\`/cmd pm2 restart citcat\` atau sesuai konfigurasi).`
+            );
+        }
+    } catch (err) {
+        await TelegramPresenter.reply(
+            ctx,
+            `❌ *Gagal Menerapkan Patch:*\n${err.message}`
+        );
+    }
+});
+
+bot.action(/^REJECT_PATCH_(.+)$/, async (ctx) => {
+    const chatId = String(ctx.chat.id);
+    if (!TerminalService.isAuthorizedAdmin(chatId)) {
+        await ctx.answerCbQuery("⛔ Akses ditolak.", { show_alert: true });
+        return;
+    }
+    const patchId = ctx.match[1];
+    HermesSelfHealing.rejectPatch(patchId);
+    await ctx.answerCbQuery("Patch ditolak.");
+    try {
+        await ctx.editMessageReplyMarkup({ inline_keyboard: [] });
+    } catch {
+        // ignore
+    }
+    await TelegramPresenter.reply(ctx, `❌ Patch \`${patchId}\` telah dibatalkan dan dihapus dari antrean perbaikan.`);
+});
+
 bot.action("SHOW_LOGS", async (ctx) => {
     const logs = Logger.getRecentLogs(15);
     const logText = logs.join("\n");
@@ -1066,34 +1319,32 @@ bot.action("SHOW_MODEL_SETTINGS", async (ctx) => {
     await TelegramPresenter.reply(ctx, text, getModelPresetKeyboard());
 });
 
-bot.action("SET_MODEL_gemini_pro", async (ctx) => {
-    // "google/gemini-1.5-pro" sudah dimatikan Google (404 permanen). Gunakan
-    // "google/gemini-2.5-flash" yang masih aktif & stabil di OpenRouter per Juli 2026.
-    ConfigManager.setPrimaryModel("google/gemini-2.5-flash");
-    Logger.info("Model diganti ke: google/gemini-2.5-flash");
+bot.action("SET_MODEL_gemma26", async (ctx) => {
+    ConfigManager.setPrimaryModel("google/gemma-4-26b-a4b-it:free");
+    Logger.info("Model diganti ke: google/gemma-4-26b-a4b-it:free");
     await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemini-2.5-flash` (via OpenRouter)");
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemma-4-26b-a4b-it:free` (Free Fast Engine)");
 });
 
-bot.action("SET_MODEL_llama70", async (ctx) => {
-    ConfigManager.setPrimaryModel("meta-llama/llama-3.3-70b-instruct:free");
-    Logger.info("Model diganti ke: meta-llama/llama-3.3-70b-instruct:free");
+bot.action("SET_MODEL_qwen27", async (ctx) => {
+    ConfigManager.setPrimaryModel("qwen/qwen3.8-27b:free");
+    Logger.info("Model diganti ke: qwen/qwen3.8-27b:free");
     await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `meta-llama/llama-3.3-70b-instruct:free`");
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `qwen/qwen3.8-27b:free` (Free Reasoning Engine)");
 });
 
-bot.action("SET_MODEL_qwen32", async (ctx) => {
-    ConfigManager.setPrimaryModel("qwen/qwen-2.5-coder-32b-instruct:free");
-    Logger.info("Model diganti ke: qwen/qwen-2.5-coder-32b-instruct:free");
+bot.action("SET_MODEL_gemma31", async (ctx) => {
+    ConfigManager.setPrimaryModel("google/gemma-4-31b-it:free");
+    Logger.info("Model diganti ke: google/gemma-4-31b-it:free");
     await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `qwen/qwen-2.5-coder-32b-instruct:free`");
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `google/gemma-4-31b-it:free` (Free High-Precision Engine)");
 });
 
-bot.action("SET_MODEL_deepseek70", async (ctx) => {
-    ConfigManager.setPrimaryModel("deepseek/deepseek-r1-distill-llama-70b:free");
-    Logger.info("Model diganti ke: deepseek/deepseek-r1-distill-llama-70b:free");
+bot.action("SET_MODEL_nemotron", async (ctx) => {
+    ConfigManager.setPrimaryModel("nvidia/nemotron-3.5-lightning:free");
+    Logger.info("Model diganti ke: nvidia/nemotron-3.5-lightning:free");
     await ctx.answerCbQuery();
-    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `deepseek/deepseek-r1-distill-llama-70b:free`");
+    await TelegramPresenter.reply(ctx, "✅ Model utama diganti ke: `nvidia/nemotron-3.5-lightning:free`");
 });
 
 bot.action("SET_MODEL_claude35", async (ctx) => {
@@ -1582,18 +1833,22 @@ bot.on("text", async (ctx) => {
 
         await ctx.sendChatAction("typing");
 
-        // 1. AUTO IMPLICIT MEMORY EXTRACTION ENGINE (Otomatis Ingat Fakta dari Chat Biasa)
-        const memoryFactPatterns = [
-            /(?:nama|email|dosen|pembimbing|vps|ip|server|alamat|nomor|telepon|hp|wa|preferensi|hobi|pekerjaan|proyek|tugas)\s+(?:saya|ku|adalah|itu|yaitu|:)\s+(.+)/i,
-            /(?:saya|ku)\s+(?:adalah|seorang|bekerja|kuliah|menggunakan|pakai|suka|inginkan|butuh)\s+(.+)/i,
-            /(?:ingat|catat|simpan)\s+(?:bahwa|kalau|informasi)?\s+(.+)/i
-        ];
+        // 1. AUTO IMPLICIT MEMORY EXTRACTION ENGINE (Hanya simpan profil/fakta personal asli, bukan pertanyaan/kondisional)
+        const isQuestionOrInquiry = /[?]|^(?:jika|kalau|apakah|bagaimana|gimana|bisakah|adakah|bisa|tolong|coba|mohon|misal|seandainya|kenapa|mengapa|apa|siapa|berapa)\b/i.test(userText.trim());
 
-        for (const pattern of memoryFactPatterns) {
-            if (pattern.test(userText) && !/^(siapa|apa|dimana|kapan|mengapa|kenapa|berapa|bagaimana|kamu\s+siapa)/i.test(userText.trim())) {
-                const stored = MemoryManager.storeLongTermMemory(chatId, userText);
-                Logger.info(`[Auto-Memory Extractor] Otomatis mengingat fakta baru (${stored.id}): "${userText}"`);
-                break;
+        if (!isQuestionOrInquiry) {
+            const memoryFactPatterns = [
+                /^(?:nama|email|dosen|pembimbing|vps|ip|server|alamat|nomor|telepon|wa)\s+(?:saya|ku)\s*(?:adalah|:)\s+(.+)/i,
+                /^(?:saya|ku)\s+(?:bekerja|kuliah|tinggal)\s+di\s+(.+)/i,
+                /^(?:ingat|catat|simpan)\s+(?:bahwa|informasi)?\s+(.+)/i
+            ];
+
+            for (const pattern of memoryFactPatterns) {
+                if (pattern.test(userText.trim())) {
+                    const stored = MemoryManager.storeLongTermMemory(chatId, userText, ["user-fact"]);
+                    Logger.info(`[Auto-Memory Extractor] Otomatis mengingat fakta profil baru (${stored.id}): "${userText}"`);
+                    break;
+                }
             }
         }
 
@@ -1753,68 +2008,91 @@ bot.on("text", async (ctx) => {
 
                 // AUTOMATED WEBPAGE HTML SCRAPER ENGINE
                 // Scrape top 2 search result URLs to extract exact numeric data, pricing tables, and live figures!
+                // Filter out social media & anti-bot domains (Instagram, Facebook, X/Twitter, etc.)
                 let scrapedPagesContext = "";
-                const topUrls = searchResults.slice(0, 2).map(r => r.url);
+                const topUrls = searchResults
+                    .map(r => r.url)
+                    .filter(targetUrl => !DocumentService.isRestrictedDomain(targetUrl))
+                    .slice(0, 2);
 
-                // Scraping dua halaman teratas dilakukan paralel (Promise.allSettled),
-                // bukan satu-satu berurutan -> mempercepat waktu jawab secara signifikan.
-                const scrapeResults = await Promise.allSettled(
-                    topUrls.map(targetUrl => DocumentService.fetchUrlContent(targetUrl))
-                );
-                scrapeResults.forEach((result, idx) => {
-                    const targetUrl = topUrls[idx];
-                    if (result.status === "fulfilled" && result.value && result.value.length > 50) {
-                        scrapedPagesContext += `\n--- ISI DETAIL HASIL SCRAPING WEBPAGE (${targetUrl}) ---\n${result.value.substring(0, 5000)}\n`;
-                    } else if (result.status === "rejected") {
-                        Logger.warn(`Scraping URL ${targetUrl} error:`, result.reason?.message || result.reason);
-                    }
-                });
+                if (topUrls.length > 0) {
+                    const scrapeResults = await Promise.allSettled(
+                        topUrls.map(targetUrl => DocumentService.fetchUrlContent(targetUrl))
+                    );
+                    scrapeResults.forEach((result, idx) => {
+                        const targetUrl = topUrls[idx];
+                        if (result.status === "fulfilled" && result.value && result.value.length > 50) {
+                            scrapedPagesContext += `\n--- ISI DETAIL HASIL SCRAPING WEBPAGE (${targetUrl}) ---\n${result.value.substring(0, 5000)}\n`;
+                        } else if (result.status === "rejected") {
+                            Logger.warn(`Scraping URL ${targetUrl} error:`, result.reason?.message || result.reason);
+                        }
+                    });
+                }
 
                 searchContext = rawSearchText + (scrapedPagesContext ? `\n\n${scrapedPagesContext}` : "");
+            }
+        }
+
+        // Susun prompt sistem dengan rapi agar konteks TIDAK bocor ke role "user" (mencegah Prompt Leakage)
+        let systemPrompt = activeAgent.getPrompt();
+        systemPrompt += `\n\n[WAKTU REAL-TIME SEKARANG (WIB)]: ${currentDateWib}`;
+
+        const isAdmin = TerminalService.isAuthorizedAdmin(chatId);
+        if (isAdmin) {
+            const sysInfo = `[INFORMASI SERVING VM REAL-TIME]: OS: ${process.platform} | Node.js: ${process.version} | Memory: ${Math.round(process.memoryUsage().rss / 1024 / 1024)} MB | Working Directory: ${process.cwd()} | Admin Status: TEROTORISASI`;
+            systemPrompt += `\n${sysInfo}`;
+            systemPrompt += `\n${AutonomousToolService.getToolSystemPrompt(process.platform)}`;
+        }
+
+        if (utekeMemoryContext) {
+            systemPrompt += `\n\n${utekeMemoryContext}`;
+        }
+
+        if (documentContext) {
+            systemPrompt += `\n\n[DOKUMEN TERLAMPIR]:\n${documentContext}`;
+        } else if (searchContext) {
+            if (userMode === "RESEARCH") {
+                systemPrompt += `\n\n[HASIL PENCARIAN WEB RISET AKADEMIK]:\n${searchContext}\n\nPetunjuk Riset: Tampilkan analisis ringkas ilmiah, judul jurnal utuh, dan URL ASLI yang tertera di atas.`;
+            } else {
+                systemPrompt += `\n\n[HASIL PENCARIAN & SCRAPING WEB REAL-TIME]:\n${searchContext}\n\nPetunjuk Utama: Jawab pertanyaan pengguna secara langsung, fokus, dan tepat sasaran berdasarkan data di atas. Jangan mengulang teks prompt, instruksi sistem, atau label internal ke dalam jawaban Anda. Sertakan URL sumber di akhir jika relevan.`;
             }
         }
 
         const messages = [
             {
                 role: "system",
-                content: activeAgent.getPrompt()
+                content: systemPrompt
             },
-            ...chatHistory
+            ...chatHistory,
+            {
+                role: "user",
+                content: userText
+            }
         ];
 
-        let finalUserPayload = `[WAKTU REAL-TIME SEKARANG (WIB)]: ${currentDateWib}\n\n${userText}`;
+        let rawAnswer = "";
+        let toolsWereExecuted = false;
 
-        if (userMode === "DEVOPS" && TerminalService.isAuthorizedAdmin(chatId)) {
-            const sysInfo = `[INFORMASI SERVING VM REAL-TIME]: OS: ${process.platform} | Node.js: ${process.version} | Memory: ${Math.round(process.memoryUsage().rss / 1024 / 1024)} MB | Working Directory: ${process.cwd()} | Admin Status: TEROTORISASI (Bisa gunakan /cmd <command> untuk eksekusi langsung)`;
-            finalUserPayload = `${sysInfo}\n\n${finalUserPayload}`;
+        if (isAdmin) {
+            rawAnswer = await AutonomousToolService.runAutonomousLoop({
+                messages,
+                askAiFn: (msgs) => AiService.askWithFallback(msgs, 0.2),
+                onProgress: async (progressText) => {
+                    toolsWereExecuted = true;
+                    try {
+                        await ctx.sendChatAction("typing");
+                        await TelegramPresenter.reply(ctx, progressText);
+                    } catch (e) {
+                        Logger.warn("Progress notification error:", e.message);
+                    }
+                },
+                maxIterations: 3
+            });
+        } else {
+            rawAnswer = await AiService.askWithFallback(messages, 0.2);
         }
 
-        if (utekeMemoryContext) {
-            finalUserPayload = `INGATAN JANGKA PANJANG UTEKE (INGATAN PENGGUNA RELEVAN):\n${utekeMemoryContext}\n\n${finalUserPayload}`;
-        }
-
-        if (documentContext) {
-            finalUserPayload = `DOKUMEN TERLAMPIR:\n${documentContext}\n\nPERTANYAAN USER:\n${finalUserPayload}`;
-        } else if (searchContext) {
-            // Auto-upgrade Agent Knowledge Base via Self-Learning Engine
-            const learnedFact = `[Self-Learned Data (${new Date().toLocaleDateString("id-ID")})]: ${userText} -> ${searchContext.substring(0, 250)}`;
-            MemoryManager.storeLongTermMemory(chatId, learnedFact, ["self-learning", "web-fact"]);
-            Logger.info(`[Self-Learning Engine] CitCat upgraded its own knowledge base for query: "${userText}"`);
-
-            if (userMode === "RESEARCH") {
-                finalUserPayload = `HASIL PENCARIAN WEB RISET AKADEMIK:\n${searchContext}\n\nPERTANYAAN USER:\n${userText}\n\nPetunjuk Riset: Tampilkan analisis ringkas ilmiah, judul jurnal utuh, dan URL ASLI yang tertera di atas.`;
-            } else {
-                finalUserPayload = `HASIL PENCARIAN & SCRAPING WEB REAL-TIME:\n${searchContext}\n\nPERTANYAAN USER:\n${userText}\n\nPetunjuk Utama: Bacalah data hasil scraping di atas secara teliti. Jawablah PERTANYAAN USER secara langsung, fokus, dan tepat sasaran berdasarkan data tersebut. JANGAN menambahkan informasi berlebihan (seperti rincian harga, spesifikasi, atau data ekstra) KECUALI jika pengguna memintanya secara eksplisit. Sertakan URL sumber di akhir jawaban jika relevan.`;
-            }
-        }
-
-        messages.push({
-            role: "user",
-            content: finalUserPayload
-        });
-
-        let rawAnswer = await AiService.askWithFallback(messages, 0.2);
-        let finalAnswer = TextSanitizer.sanitizeOutput(rawAnswer);
+        let finalAnswer = TextSanitizer.sanitizeOutput(AutonomousToolService.cleanToolTags(rawAnswer));
 
         if (!finalAnswer && searchContext) {
             Logger.warn("Search payload resulted in empty response, falling back to conversational memory...");
@@ -1824,7 +2102,7 @@ bot.on("text", async (ctx) => {
                 { role: "user", content: userText }
             ];
             rawAnswer = await AiService.askWithFallback(fallbackMessages, 0.2);
-            finalAnswer = TextSanitizer.sanitizeOutput(rawAnswer);
+            finalAnswer = TextSanitizer.sanitizeOutput(AutonomousToolService.cleanToolTags(rawAnswer));
         }
 
         if (!finalAnswer) {
@@ -1836,10 +2114,11 @@ bot.on("text", async (ctx) => {
 
         // FIX: isi cache supaya fast-cache di awal handler benar-benar berguna.
         // Tidak di-cache jika hasilnya bergantung pada pencarian web/dokumen real-time
-        // (harga, berita, kurs, dsb) karena jawabannya bisa basi/berubah.
+        // atau eksekusi perintah terminal otonom
         const isCacheable = finalAnswer &&
             !needsSearch &&
             !documentContext &&
+            !toolsWereExecuted &&
             finalAnswer.length < 3000;
 
         if (isCacheable) {
@@ -1853,7 +2132,23 @@ bot.on("text", async (ctx) => {
 
     } catch (err) {
         Logger.error("Unhandled Bot Error:", err.message);
-        await TelegramPresenter.reply(ctx, `Terjadi kesalahan saat memproses permintaan: ${err.message}`);
+        const adminUserId = ConfigManager.getAdminUserId();
+        if (adminUserId) {
+            HermesSelfHealing.diagnoseAndProposeFix(err, { messageText: userText, chatId })
+                .then(patch => {
+                    if (patch && patch.success) {
+                        notifyAdminSelfHealingPatch(bot, adminUserId, patch);
+                    }
+                })
+                .catch(e => Logger.warn("Hermes Self-Healing error in text handler:", e.message));
+        }
+        let errorMsg = "⚠️ Maaf, terjadi kendala saat memproses permintaan Anda. Silakan coba kirim ulang pesan Anda beberapa saat lagi.";
+        if (err.message && err.message.includes("404")) {
+            errorMsg = "⚠️ *Model / Endpoint Tidak Ditemukan (404)*\n\nModel AI sedang mengalami transisi versi. Sistem telah dialihkan ke model cadangan. Silakan coba ulangi pertanyaan Anda.";
+        } else if (err.message && err.message.includes("429")) {
+            errorMsg = "⚠️ *Layanan Sibuk (429)*\n\nBatas permintaan rate-limit tercapai. Mohon tunggu 15-30 detik lalu coba lagi.";
+        }
+        await TelegramPresenter.reply(ctx, errorMsg);
     }
 });
 
@@ -1868,9 +2163,9 @@ bot.on("text", async (ctx) => {
         Logger.info("Pembersihan Webhook lama & reset pending updates Telegram...");
         await bot.telegram.deleteWebhook({ drop_pending_updates: true });
 
-        await bot.launch();
         await registerTelegramCommandScopes(bot);
         Logger.info("🚀 Bot CitCat sukses terhubung ke Telegram & aktif menerima pesan via Long Polling!");
+        await bot.launch();
     } catch (err) {
         Logger.error("CRITICAL ERROR saat meluncurkan Telegraf Bot:", err.message);
     }

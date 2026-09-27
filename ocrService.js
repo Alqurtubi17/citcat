@@ -1,14 +1,27 @@
 const axios = require("axios");
 const { ConfigManager } = require("./configManager");
 
-// Alias resmi Google yang auto-update, bukan versi hardcoded. "gemini-1.5-flash" sudah
-// dimatikan permanen oleh Google (semua request akan 404) sejak awal 2026.
-const GEMINI_VISION_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-flash-latest:generateContent";
+const ACTIVE_VISION_MODELS = [
+    "gemini-flash-latest",
+    "gemini-3.6-flash",
+    "gemini-3.8-flash",
+    "gemini-flash-lite-latest"
+];
+
+let currentOcrKeyIndex = 0;
+
+function getOrderedOcrKeys() {
+    const keys = ConfigManager.getGeminiApiKeys();
+    if (keys.length <= 1) return keys;
+    const startIndex = currentOcrKeyIndex % keys.length;
+    currentOcrKeyIndex = (currentOcrKeyIndex + 1) % keys.length;
+    return [...keys.slice(startIndex), ...keys.slice(0, startIndex)];
+}
 
 async function processImageOcr(buffer, mimeType = "image/jpeg", userInstruction = "") {
-    const apiKey = ConfigManager.getApiKey("GEMINI_API_KEY");
+    const candidateKeys = getOrderedOcrKeys();
 
-    if (!apiKey) {
+    if (candidateKeys.length === 0) {
         throw new Error("GEMINI_API_KEY belum dikonfigurasi. Silakan atur dengan perintah:\n`/setkey GEMINI_API_KEY <api_key_anda>`");
     }
 
@@ -38,30 +51,59 @@ Langkah Tugas:
 ---JSON_TABLE_END---
 Jika tidak ada tabel, buatkan data baris-berbaris yang rapi.`;
 
-    const response = await axios.post(
-        `${GEMINI_VISION_URL}?key=${apiKey}`,
-        {
-            contents: [
-                {
-                    parts: [
-                        {
-                            inline_data: {
-                                mime_type: mimeType,
-                                data: base64Data
-                            }
-                        },
-                        { text: promptText }
-                    ]
-                }
-            ]
-        },
-        {
-            headers: { "Content-Type": "application/json" },
-            timeout: 120000
-        }
-    );
+    let replyText = "";
+    let lastErr = null;
 
-    const replyText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+    // Multi-key pool rotation & rate-limit auto-failover
+    for (const apiKey of candidateKeys) {
+        const maskedKey = apiKey.length > 8 ? `...${apiKey.slice(-4)}` : "key";
+        for (const model of ACTIVE_VISION_MODELS) {
+            try {
+                const response = await axios.post(
+                    `https://generativelanguage.googleapis.com/v1beta/models/${model}:generateContent?key=${apiKey}`,
+                    {
+                        contents: [
+                            {
+                                parts: [
+                                    {
+                                        inline_data: {
+                                            mime_type: mimeType,
+                                            data: base64Data
+                                        }
+                                    },
+                                    { text: promptText }
+                                ]
+                            }
+                        ]
+                    },
+                    {
+                        headers: { "Content-Type": "application/json" },
+                        timeout: 120000
+                    }
+                );
+
+                replyText = response.data?.candidates?.[0]?.content?.parts?.[0]?.text || "";
+                if (replyText) break;
+            } catch (err) {
+                lastErr = err;
+                const status = err.response?.status;
+                if (status === 429) {
+                    console.warn(`[OcrService] API Key (${maskedKey}) terkena 429 Rate Limit. Beralih ke API Key berikutnya...`);
+                    break; // Switch to next key immediately
+                }
+                if (status === 400 || status === 401) {
+                    console.warn(`[OcrService] API Key (${maskedKey}) unauthorized / invalid (${status}). Beralih ke key berikutnya...`);
+                    break;
+                }
+                console.warn(`[OcrService] Model ${model} on key ${maskedKey} failed (${status || err.message}). Mencoba model berikutnya...`);
+            }
+        }
+        if (replyText) break;
+    }
+
+    if (!replyText) {
+        throw lastErr || new Error("Gagal mengekstrak teks gambar dari semua model AI Vision.");
+    }
 
     const jsonMatch = replyText.match(/---JSON_TABLE_START---([\s\S]*?)---JSON_TABLE_END---/i);
     let extractedTableData = null;

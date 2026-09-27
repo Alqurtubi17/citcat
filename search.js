@@ -3,7 +3,8 @@ const cheerio = require("cheerio");
 const { MemoryManager } = require("./memory");
 
 const SEARX_URL = process.env.SEARX_URL || "http://127.0.0.1:8080/search";
-const SEARCH_TIMEOUT_MS = 15000;
+const SEARCH_TIMEOUT_MS = 3000;
+let searxngCircuitOpenUntil = 0;
 
 function cleanSnippet(snippet) {
     if (!snippet) return "";
@@ -59,6 +60,11 @@ function prepareQuery(query) {
 }
 
 async function searchWeb(query, maxResults = 15) {
+    // Fast Circuit Breaker: If SearXNG is down or returning 403, bypass instantly (0ms delay)
+    if (Date.now() < searxngCircuitOpenUntil) {
+        return [];
+    }
+
     try {
         const optimizedQuery = prepareQuery(query);
         const results = [];
@@ -91,41 +97,13 @@ async function searchWeb(query, maxResults = 15) {
                 }
             }
         } catch (err) {
-            // Proceed to HTML Cheerio parsing fallback
-        }
-
-        // 2. HTML Cheerio parsing fallback
-        if (results.length === 0) {
-            const htmlResponse = await axios.post(
-                SEARX_URL,
-                new URLSearchParams({
-                    q: optimizedQuery,
-                    language: "id"
-                }).toString(),
-                {
-                    headers: { "Content-Type": "application/x-www-form-urlencoded" },
-                    timeout: SEARCH_TIMEOUT_MS
-                }
-            );
-
-            const $ = cheerio.load(htmlResponse.data);
-
-            $("article.result, div.result, .result-default").each((i, el) => {
-                if (results.length >= maxResults) return false;
-
-                const linkEl = $(el).find("h3 a, h4 a, a.result-url").first();
-                let title = linkEl.text().trim();
-                const url = linkEl.attr("href") || $(el).find("a").attr("href");
-
-                const snippetEl = $(el).find(".content, .snippet, p.content, div.content").first();
-                const snippet = cleanSnippet(snippetEl.text().trim());
-
-                title = title.replace(/[…\.\s]+$/, "").trim();
-
-                if (title && snippet && url && !url.startsWith("#")) {
-                    results.push({ title, url, snippet });
-                }
-            });
+            // If 403 or connection refused, trip circuit breaker for 3 minutes to prevent lagging the chat
+            const status = err.response?.status;
+            if (status === 403 || err.code === "ECONNREFUSED") {
+                searxngCircuitOpenUntil = Date.now() + 180000;
+                console.warn(`[Search] SearXNG tidak tersedia (${status || err.code}). Circuit breaker aktif 3 menit, pencarian web dilewati agar respon cepat.`);
+                return [];
+            }
         }
 
         return results;

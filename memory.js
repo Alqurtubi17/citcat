@@ -19,6 +19,23 @@ function loadMemory() {
             const data = JSON.parse(fs.readFileSync(MEMORY_FILE, "utf-8"));
             if (!data._longTermMemories) data._longTermMemories = [];
             if (!data._abbreviations) data._abbreviations = {};
+
+            // Purge any poisoned memories (self-learning/web-fact/social media anti-bot URLs/accidental questions)
+            const initialLen = data._longTermMemories.length;
+            data._longTermMemories = data._longTermMemories.filter(m => {
+                if (!m || !m.text) return false;
+                const textLower = m.text.toLowerCase();
+                const tags = Array.isArray(m.tags) ? m.tags : [];
+                if (tags.includes("self-learning") || tags.includes("web-fact")) return false;
+                if (textLower.includes("instagram.com") || textLower.includes("facebook.com") || textLower.includes("twitter.com") || textLower.includes("x.com") || textLower.includes("tiktok.com")) return false;
+                // Bersihkan teks pertanyaan/hipotesis yang keliru tersimpan sebagai fakta
+                if (textLower.includes("?") || /^(?:\[user fact\]:\s*)?(?:jika|kalau|apakah|bagaimana|gimana|bisakah|adakah|misal)\b/i.test(textLower)) return false;
+                return true;
+            });
+            if (data._longTermMemories.length !== initialLen) {
+                saveMemory(data);
+            }
+
             return data;
         }
     } catch (err) {
@@ -272,29 +289,6 @@ class MemoryManager {
 
         if (this.store[chatId].history.length > MAX_HISTORY) {
             this.store[chatId].history = this.store[chatId].history.slice(-MAX_HISTORY);
-        }
-
-        // SMART FACT EXTRACTION:
-        // Automatically save personal info/user facts if user expresses a clear statement
-        const cleanText = userText.trim();
-        const isCommand = cleanText.startsWith("/");
-        const factPattern = /(?:nama|email|dosen|pembimbing|vps|ip|server|alamat|nomor|telepon|hp|wa|preferensi|hobi|pekerjaan|proyek|tugas)\s+(?:saya|ku|adalah|itu|yaitu|:)\s+(.+)/i;
-
-        if (!isCommand && factPattern.test(cleanText)) {
-            if (!this.store._longTermMemories) this.store._longTermMemories = [];
-
-            const factSummary = `[User Fact]: ${cleanText}`;
-            const exists = this.store._longTermMemories.some(m => m.chatId === String(chatId) && m.text.toLowerCase() === factSummary.toLowerCase());
-            if (!exists) {
-                this.store._longTermMemories.push({
-                    id: Date.now().toString(36) + Math.random().toString(36).substring(2, 6),
-                    chatId: String(chatId),
-                    text: factSummary,
-                    tags: ["user-fact", "manual"],
-                    timestamp: new Date().toISOString()
-                });
-                this.pruneLongTermMemories(chatId);
-            }
         }
 
         saveMemory(this.store);

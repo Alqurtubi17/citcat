@@ -40,7 +40,7 @@ Wajib gunakan pemisah tag ini secara tepat:
 (Tulis rangkuman inti terstruktur di sini)
 ---RANGKUMAN_AKHIR---`;
 
-    const models = ["gemini-flash-latest", "gemini-pro-latest"];
+    const models = ["gemini-flash-latest", "gemini-3.6-flash", "gemini-3.8-flash", "gemini-flash-lite-latest"];
     let lastError = null;
     let replyText = "";
 
@@ -94,7 +94,7 @@ Wajib gunakan pemisah tag ini secara tepat:
     // 2. OpenRouter Multimodal Fallback if Direct API hit 429 or failed
     if (!replyText && openrouterKey) {
         console.warn("[Media Transcribe] Direct Google API failed/rate-limited. Attempting OpenRouter multimodal fallback...");
-        const openrouterModels = ["google/gemini-2.5-flash", "google/gemini-flash-1.5"];
+        const openrouterModels = ["inclusionai/ling-3.0-flash-vl:free", "google/gemma-4-26b-a4b-it:free"];
         for (const orModel of openrouterModels) {
             try {
                 const response = await axios.post(
